@@ -4,11 +4,10 @@ Some custom distance metrics and similarity measures.
 from __future__ import division
 import numpy as np
 import numba
-import math
 
 
 @numba.njit(fastmath=True)
-def distance_norm_3tensors(x, y, shape=None, p=2, q=2, r=2):
+def distance_norm_3tensors(x, y, shape=None, norm_type=(2, 2, 2)):
     """
     Distance between two 3rd order (rank 3) tensors under the specified type of norm.
     The tensors `x` and `y` should be flattened into 1D numpy arrays before calling this function.
@@ -19,26 +18,29 @@ def distance_norm_3tensors(x, y, shape=None, p=2, q=2, r=2):
     The inputs are taken as 1d arrays in order to be consistent  with the function signature required by
     another library.
 
-    The inputs `p, q, r` together specify the type of norm used. They should be integers >= 1.
-    For example, the default values `p = q = r = 2` compute the `l2` or Euclidean norm of the flattened tensor.
+    The input `norm_type` is a tuple of length three that takes the norm parameters `p, q, r`, which together specify
+    the type of norm used. They should be integers >= 1.
+    For example, the default value `norm_type=(2, 2, 2)` computes the `l2` or Euclidean norm of the flattened tensor.
+    The value `norm_type=(1, 1, 1)` computes the `l1` norm of the flattened tensor.
 
     :param x: numpy array of shape `(n, )` with the first flattened tensor.
     :param y: numpy array of shape `(n, )` with the second flattened tensor.
     :param shape: tuple of three values specifying the shape of the tensors. Ideally this should be a required
                   input, but if it is not specified, `x` and `y` will be reshaped into `(1, 1, n)`.
-    :param p: norm parameter which is an int value >= 1.
-    :param q: same as `p`.
-    :param r: same as `p`.
+    :param norm_type: tuple of three values `(p, q, r)` that together define the type of norm to be used.
+                      `p`, `q`, and `r` should all be integers >= 1.
 
     :return: norm value which is a float.
     """
     if shape is None:
         shape = (1, 1, x.shape[0])
 
-    zt = np.abs(x - y).reshape(shape)
+    p, q, r = norm_type
     pow1 = q / r
     pow2 = p / q
     pow3 = 1. / p
+
+    zt = np.abs(x - y).reshape(shape)
     s = 0.
     for i in range(shape[0]):
         sj = 0.
