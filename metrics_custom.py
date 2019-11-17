@@ -25,27 +25,22 @@ def distance_norm_3tensors(x, y, shape=None, norm_type=(2, 2, 2)):
 
     :param x: numpy array of shape `(n, )` with the first flattened tensor.
     :param y: numpy array of shape `(n, )` with the second flattened tensor.
-    :param shape: tuple of three values specifying the shape of the tensors. Ideally this should be a required
-                  input, but if it is not specified, `x` and `y` will be reshaped into `(1, 1, n)`.
+    :param shape: tuple of three values specifying the shape of the tensors. This is a required argument.
     :param norm_type: tuple of three values `(p, q, r)` that together define the type of norm to be used.
                       `p`, `q`, and `r` should all be integers >= 1.
 
     :return: norm value which is a float.
     """
-    if shape is None:
-        shape = (1, 1, x.shape[0])
-
-    p, q, r = norm_type
-    pow1 = q / r
-    pow2 = p / q
-    pow3 = 1. / p
+    pow1 = norm_type[1] / norm_type[2]
+    pow2 = norm_type[0] / norm_type[1]
+    pow3 = 1. / norm_type[0]
 
     zt = np.abs(x - y).reshape(shape)
     s = 0.
     for i in range(shape[0]):
         sj = 0.
         for j in range(shape[1]):
-            sj += (np.sum(zt[i, j, :] ** r) ** pow1)
+            sj += (np.sum(zt[i, j, :] ** norm_type[2]) ** pow1)
 
         s += (sj ** pow2)
 
@@ -66,14 +61,10 @@ def distance_angular_3tensors(x, y, shape=None):
 
     :param x: numpy array of shape `(n, )` with the first flattened tensor.
     :param y: numpy array of shape `(n, )` with the second flattened tensor.
-    :param shape: tuple of three values specifying the shape of the tensors. Ideally this should be a required
-                  input, but if it is not specified, `x` and `y` will be reshaped into `(1, 1, n)`.
+    :param shape: tuple of three values specifying the shape of the tensors. This is a required argument.
 
     :return: norm value which should be in the range [0, 1].
     """
-    if shape is None:
-        shape = (1, 1, x.shape[0])
-
     xt = x.reshape(shape)
     yt = y.reshape(shape)
     s = 0.
