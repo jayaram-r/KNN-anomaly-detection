@@ -23,28 +23,48 @@ def distance_norm_3tensors(x, y, shape=None, norm_type=(2, 2, 2)):
     For example, the default value `norm_type=(2, 2, 2)` computes the `l2` or Euclidean norm of the flattened tensor.
     The value `norm_type=(1, 1, 1)` computes the `l1` norm of the flattened tensor.
 
+    The special case `p = -1` with finite `q` and `r` calculates the norm with `p = \infty`. The value `-1` is
+    used instead of `np.infty` because numba does not handle tuple with mixed float and int values.
+
     :param x: numpy array of shape `(n, )` with the first flattened tensor.
     :param y: numpy array of shape `(n, )` with the second flattened tensor.
     :param shape: tuple of three values specifying the shape of the tensors. This is a required argument.
     :param norm_type: tuple of three values `(p, q, r)` that together define the type of norm to be used.
-                      `p`, `q`, and `r` should all be integers >= 1.
+                      `q` and `r` should be integers >= 1. `p = -1` is a special value that calculates the
+                      norm with `p = \infty`; otherwise `p` should be an integer >= 1.
 
-    :return: norm value which is a float.
+    :return: distance value which is a non-negative float.
     """
-    pow1 = norm_type[1] / norm_type[2]
-    pow2 = norm_type[0] / norm_type[1]
-    pow3 = 1. / norm_type[0]
-
     zt = np.abs(x - y).reshape(shape)
-    s = 0.
-    for i in range(shape[0]):
-        sj = 0.
-        for j in range(shape[1]):
-            sj += (np.sum(zt[i, j, :] ** norm_type[2]) ** pow1)
+    # q / r
+    pow1 = norm_type[1] / norm_type[2]
+    if norm_type[0] > 0:
+        # p / q
+        pow2 = norm_type[0] / norm_type[1]
+        s = 0.
+        for i in range(shape[0]):
+            sj = 0.
+            for j in range(shape[1]):
+                sj += (np.sum(zt[i, j, :] ** norm_type[2]) ** pow1)
 
-        s += (sj ** pow2)
+            s += (sj ** pow2)
 
-    return s ** pow3
+        # power 1 / p
+        dist = s ** (1. / norm_type[0])
+    else:
+        # p = \infty
+        s = -1.0
+        for i in range(shape[0]):
+            sj = 0.
+            for j in range(shape[1]):
+                sj += (np.sum(zt[i, j, :] ** norm_type[2]) ** pow1)
+
+            if sj > s:
+                s = sj
+
+        dist = s ** (1. / norm_type[1])
+
+    return dist
 
 
 @numba.njit(fastmath=True)
@@ -63,7 +83,7 @@ def distance_angular_3tensors(x, y, shape=None):
     :param y: numpy array of shape `(n, )` with the second flattened tensor.
     :param shape: tuple of three values specifying the shape of the tensors. This is a required argument.
 
-    :return: norm value which should be in the range [0, 1].
+    :return: distance value which should be in the range [0, 1].
     """
     xt = x.reshape(shape)
     yt = y.reshape(shape)
