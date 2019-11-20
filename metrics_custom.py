@@ -83,7 +83,7 @@ def distance_angular_3tensors(x, y, shape=None):
     :param y: numpy array of shape `(n, )` with the second flattened tensor.
     :param shape: tuple of three values specifying the shape of the tensors. This is a required argument.
 
-    :return: distance value which should be in the range [0, 1].
+    :return: distance value which should be in the range [0, \pi].
     """
     xt = x.reshape(shape)
     yt = y.reshape(shape)
@@ -94,9 +94,88 @@ def distance_angular_3tensors(x, y, shape=None):
         val3 = np.sum(yt[i, :, :] * yt[i, :, :]) ** 0.5
         if val2 > 0. and val3 > 0.:
             s += (val1 / (val2 * val3))
+        elif val2 <= 0. and val3 <= 0.:
+            # Both vector of 0s
+            s += 1.
 
     # Angular distance is the cosine-inverse of the average cosine similarity, divided by `pi` to normalize
     # the distance to the range `[0, 1]`
     s = max(-1., min(1., s / shape[0]))
 
-    return np.arccos(s) / np.pi
+    return np.arccos(s)
+
+
+@numba.njit()
+def distance_SNN(x, y):
+    """
+    Shared nearest neighbor distance metric. This is a secondary (ranking-based) distance measure.
+    First, a standard distance metric is used to find the K nearest neighbors (K-NN) of each point from a fixed set
+    of `N` points. If `N` and/or the dimensionality is large, this can be done by constructing an approximate
+    nearest neighbor index and querying it.
+
+    The shared nearest neighbor (SNN) similarity between two points `x` and `y` is defined as the size of the
+    intersection of their K-NN sets, divided by `K`. This is equal to the cosine similarity between the binary
+    representation of the two points (of length `N`) in which the presence of as neighbor is indicated by 1
+    and absence by 0. This is easy to see because their inner product will be the number of overlapping neighbors,
+    and the norm of each vector will be `sqrt(K)`.
+
+    The cosine similarity is translated into a distance by taking the inverse-cosine which gives and angle
+    value between `[0, \pi]`.
+
+    For justification and advantages of this distance metric, see this paper:
+    Houle, Michael E., et al. "Can shared-neighbor distances defeat the curse of dimensionality?."
+    International Conference on Scientific and Statistical Database Management. Springer, Berlin, Heidelberg, 2010.
+
+    :param x: numpy array of shape `(N, )` with binary values 0 or 1. 1 indicates the presence of neighbor.
+    :param y: numpy array of shape `(N, )` with binary values 0 or 1. 1 indicates the presence of neighbor.
+    :return: SNN distance which should be in the range [0, \pi].
+    """
+    # Number of ones (neighbors) in x
+    mask_x = x > 0.
+    s_x = mask_x[mask_x].shape[0]
+
+    # Number of ones (neighbors) in y
+    mask_y = y > 0.
+    s_y = mask_y[mask_y].shape[0]
+
+    # Number of overlapping neighbors
+    mask_xy = np.logical_and(mask_x, mask_y)
+    s_xy = mask_xy[mask_xy].shape[0]
+
+    # Cosine angular distance
+    if s_x > 0. and s_y > 0.:
+        cs = s_xy / ((s_x * s_y) ** 0.5)
+        # Clip values to the range `[-1, 1]`, the domain of arc-cosine
+        dist = np.arccos(max(-1., min(1., cs)))
+    elif s_x <= 0. and s_y <= 0.:
+        # Both vector of 0s
+        dist = 0.0
+    else:
+        # only one of them is a vectors of 0s
+        dist = np.pi
+
+    return dist
+
+
+# TODO: convert the output to a sparse matrix to be memory efficient
+@numba.njit(parallel=True)
+def neighborhood_membership_vectors(index_neighbors, n):
+    """
+    A simple utility to convert the nearest neighbor indices to set membership binary vectors. This is used
+    in the calculation of shared nearest neighbor distance.
+
+    :param index_neighbors: numpy array of shape `(m, k)` with the index of the `k` nearest neighbors of the
+                            `m` points. Index starts at 0.
+    :param n: total number of points.
+
+    :return: an array with the set membership 0/1 values. Has shape `(m, n)`.
+    """
+    m = index_neighbors.shape[0]
+    x = np.zeros((m, n), dtype=np.int8)
+    for i in numba.prange(m):
+        for j in index_neighbors[i, :]:
+            # Cannot do `x[i, index_neighbors[i, :]]` because `numba` does not support it.
+            # But this inner loop is usually very small (order of 10s)
+            x[i, j] = 1
+
+    return x
