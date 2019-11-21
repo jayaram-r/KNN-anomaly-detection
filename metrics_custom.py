@@ -105,7 +105,7 @@ def distance_angular_3tensors(x, y, shape=None):
     return np.arccos(s)
 
 
-@numba.njit()
+@numba.njit(fastmath=True)
 def distance_SNN(x, y):
     """
     Shared nearest neighbor distance metric. This is a secondary (ranking-based) distance measure.
