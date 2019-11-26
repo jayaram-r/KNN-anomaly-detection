@@ -7,7 +7,7 @@ import numba
 
 
 @numba.njit(fastmath=True)
-def distance_norm_3tensors(x, y, shape=None, norm_type=(2, 2, 2)):
+def distance_norm_3tensors(x, y, shape=(1, 1, 1), norm_type=(2, 2, 2)):
     """
     Distance between two 3rd order (rank 3) tensors under the specified type of norm.
     The tensors `x` and `y` should be flattened into 1D numpy arrays before calling this function.
@@ -29,6 +29,7 @@ def distance_norm_3tensors(x, y, shape=None, norm_type=(2, 2, 2)):
     :param x: numpy array of shape `(n, )` with the first flattened tensor.
     :param y: numpy array of shape `(n, )` with the second flattened tensor.
     :param shape: tuple of three values specifying the shape of the tensors. This is a required argument.
+                  The default value `(1, 1, 1)` is a dummy value used to specify the type.
     :param norm_type: tuple of three values `(p, q, r)` that together define the type of norm to be used.
                       `q` and `r` should be integers >= 1. `p = -1` is a special value that calculates the
                       norm with `p = \infty`; otherwise `p` should be an integer >= 1.
@@ -68,7 +69,7 @@ def distance_norm_3tensors(x, y, shape=None, norm_type=(2, 2, 2)):
 
 
 @numba.njit(fastmath=True)
-def distance_angular_3tensors(x, y, shape=None):
+def distance_angular_3tensors(x, y, shape=(1, 1, 1)):
     """
     Cosine angular distance between two 3rd order (rank 3) tensors.
     The tensors `x` and `y` should be flattened into 1D numpy arrays before calling this function.
@@ -82,7 +83,7 @@ def distance_angular_3tensors(x, y, shape=None):
     :param x: numpy array of shape `(n, )` with the first flattened tensor.
     :param y: numpy array of shape `(n, )` with the second flattened tensor.
     :param shape: tuple of three values specifying the shape of the tensors. This is a required argument.
-
+                  The default value `(1, 1, 1)` is a dummy value used to specify the type.
     :return: distance value which should be in the range [0, \pi].
     """
     xt = x.reshape(shape)
