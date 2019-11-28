@@ -128,8 +128,7 @@ class averaged_KLPE_anomaly_detection:
                 'n_neighbors': max(1 + self.neighborhood_range[1], min_n_neighbors),
                 'rho': rho,
                 'random_state': self.seed_rng,
-                'n_jobs': self.n_jobs,
-                'verbose': False
+                'n_jobs': self.n_jobs
             }
             index_knn_primary = NNDescent(data, **params)
         else:
@@ -165,8 +164,7 @@ class averaged_KLPE_anomaly_detection:
                     'n_neighbors': max(1 + self.neighborhood_range[1], min_n_neighbors),
                     'rho': rho,
                     'random_state': self.seed_rng,
-                    'n_jobs': self.n_jobs,
-                    'verbose': False
+                    'n_jobs': self.n_jobs
                 }
                 index_knn_secondary = NNDescent(data_neighbors, **params)
             else:

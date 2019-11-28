@@ -3,10 +3,31 @@ Generate data that follows a mixture of factor analyzers (MFA) model
 """
 from __future__ import absolute_import, division, print_function
 import numpy as np
+import numba
 import logging
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+@numba.njit()
+def sample_diagonal_multivariate_normal(means, variances, ns):
+    """
+    Generate samples from a multivariate normal distribution with diagonal covariance matrix.
+
+    :param means: numpy array of shape `(dim, )` with the mean values, where `dim` is the dimension.
+    :param variances: numpy array of shape `(dim, )` with the variance values.
+    :param ns: number of samples to generate.
+
+    :return: numpy array of shape `(ns, dim)` with the samples.
+    """
+    dim = means.shape[0]
+    stdev = np.sqrt(variances)
+    samples = np.zeros((ns, dim))
+    for i in range(dim):
+        samples[:, i] = np.random.normal(loc=means[i], scale=stdev[i], size=ns)
+
+    return samples
 
 
 class MFA_model:
@@ -124,8 +145,27 @@ class MFA_model:
             if counts[i] < 1:
                 continue
 
+            # Latent random vector is generated from a zero mean, identity covariance multivariate Gaussian
+            z = sample_diagonal_multivariate_normal(
+                np.zeros(self.dim_latent[i]), np.ones(self.dim_latent[i]), counts[i]
+            )
+            # Noise random vector is generated from a zero mean multivariate Gaussian with covariance
+            # matrix `self.parameters['covariance_noise']`
+            u = sample_diagonal_multivariate_normal(
+                np.zeros(self.dim), np.diag(self.parameters['covariance_noise']), counts[i]
+            )
+
+            x = (np.dot(z, np.transpose(self.parameters['factor_loading_mats'][i])) + u +
+                 self.parameters['means'][i][np.newaxis, :])
+            data.append(x)
+
+            """
+            # The observed feature vector can also be directly generated according to the multivariate Gaussian 
+            # distribution in the observed feature space. But this can be slow when the number of observed 
+            # dimensions is high
             data.append(np.random.multivariate_normal(self.parameters['means'][i],
                                                       self.parameters['covariance_mats'][i], counts[i]))
+            """
             labels.append(i * np.ones(counts[i], dtype=np.int))
 
         data = np.concatenate(data, axis=0)
