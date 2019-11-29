@@ -3,15 +3,15 @@ Generate data that follows a mixture of factor analyzers (MFA) model
 """
 from __future__ import absolute_import, division, print_function
 import numpy as np
-import numba
+from numba import njit
 import logging
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-@numba.njit()
-def sample_diagonal_multivariate_normal(means, variances, ns):
+@njit()
+def sample_diagonal_multivariate_normal(means, variances, ns=1):
     """
     Generate samples from a multivariate normal distribution with diagonal covariance matrix.
 
@@ -84,6 +84,7 @@ class MFA_model:
 
         :return: dict of parameters.
         """
+        zs = np.zeros(self.dim)
         self.parameters = dict()
 
         # Mixture weights are sampled from a symmetric Dirichlet distribution
@@ -107,14 +108,14 @@ class MFA_model:
             # Component mean
             m = np.random.normal(loc=0., scale=5., size=self.dim)
             means.append(
-                np.random.multivariate_normal(m, np.eye(self.dim))
+                sample_diagonal_multivariate_normal(m, np.ones(self.dim), ns=1).reshape(self.dim)
             )
             # Component factor loading matrix
             mat = np.zeros((self.dim, self.dim_latent[i]))
             for j in range(self.dim_latent[i]):
                 # For each column of the factor loading matrix
                 k = np.random.uniform(low=1., high=5., size=self.dim)
-                mat[:, j] = np.random.multivariate_normal(np.zeros(self.dim), np.diag(1. / np.random.gamma(k)))
+                mat[:, j] = sample_diagonal_multivariate_normal(zs, 1. / np.random.gamma(k), ns=1).reshape(self.dim)
 
             factor_loading_mats.append(mat)
             # Covariance matrix of the observed data conditioned on this component
@@ -137,6 +138,7 @@ class MFA_model:
             - data: numpy array of shape `(N, self.dim)`.
             - labels: numpy array of component index labels of shape `(N, )`.
         """
+        zs = np.zeros(self.dim)
         # Number of samples from each component
         counts = np.random.multinomial(N, self.parameters['weights'])
         data = []
@@ -147,12 +149,12 @@ class MFA_model:
 
             # Latent random vector is generated from a zero mean, identity covariance multivariate Gaussian
             z = sample_diagonal_multivariate_normal(
-                np.zeros(self.dim_latent[i]), np.ones(self.dim_latent[i]), counts[i]
+                np.zeros(self.dim_latent[i]), np.ones(self.dim_latent[i]), ns=counts[i]
             )
             # Noise random vector is generated from a zero mean multivariate Gaussian with covariance
             # matrix `self.parameters['covariance_noise']`
             u = sample_diagonal_multivariate_normal(
-                np.zeros(self.dim), np.diag(self.parameters['covariance_noise']), counts[i]
+                zs, np.diag(self.parameters['covariance_noise']), ns=counts[i]
             )
 
             x = (np.dot(z, np.transpose(self.parameters['factor_loading_mats'][i])) + u +

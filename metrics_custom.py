@@ -3,10 +3,17 @@ Some custom distance metrics and similarity measures.
 """
 from __future__ import division
 import numpy as np
-import numba
+from numba import (
+    njit,
+    prange,
+    float64,
+    int64,
+    int8
+)
+from numba.types import Tuple
 
 
-@numba.njit(fastmath=True)
+@njit(fastmath=True)
 def distance_norm_3tensors(x, y, shape=(1, 1, 1), norm_type=(2, 2, 2)):
     """
     Distance between two 3rd order (rank 3) tensors under the specified type of norm.
@@ -68,7 +75,7 @@ def distance_norm_3tensors(x, y, shape=(1, 1, 1), norm_type=(2, 2, 2)):
     return dist
 
 
-@numba.njit(fastmath=True)
+@njit(fastmath=True)
 def distance_angular_3tensors(x, y, shape=(1, 1, 1)):
     """
     Cosine angular distance between two 3rd order (rank 3) tensors.
@@ -106,7 +113,7 @@ def distance_angular_3tensors(x, y, shape=(1, 1, 1)):
     return np.arccos(s)
 
 
-@numba.njit(fastmath=True)
+@njit(fastmath=True)
 def distance_SNN(x, y):
     """
     Shared nearest neighbor distance metric. This is a secondary (ranking-based) distance measure.
@@ -159,7 +166,7 @@ def distance_SNN(x, y):
 
 
 # TODO: convert the output to a sparse matrix to be memory efficient
-@numba.njit(parallel=True)
+@njit(int8[:, :](int64[:, :], int64), parallel=True)
 def neighborhood_membership_vectors(index_neighbors, n):
     """
     A simple utility to convert the nearest neighbor indices to set membership binary vectors. This is used
@@ -173,10 +180,39 @@ def neighborhood_membership_vectors(index_neighbors, n):
     """
     m = index_neighbors.shape[0]
     x = np.zeros((m, n), dtype=np.int8)
-    for i in numba.prange(m):
+    for i in prange(m):
         for j in index_neighbors[i, :]:
             # Cannot do `x[i, index_neighbors[i, :]]` because `numba` does not support it.
             # But this inner loop is usually very small (order of 10s)
             x[i, j] = 1
 
     return x
+
+
+@njit(Tuple((int64[:, :], float64[:, :]))(int64[:, :], float64[:, :]))
+def remove_self_neighbors(index_neighbors_, distance_neighbors_):
+    """
+    Given the index and distances of k nearest neighbors of a list of query points, remove points from their
+    own neighbor list.
+
+    :param index_neighbors_: numpy array of the index of `k` neighbors for a list of points. Has shape `(n, k)`,
+                             where `n` is the number of query points.
+    :param distance_neighbors_: numpy array of the distance of `k` neighbors for a list of points.
+                                Also has shape `(n, k)`.
+
+    :return: (index_neighbors, distance_neighbors), where each of them has shape `(n, k - 1)`.
+    """
+    n, k = index_neighbors_.shape
+    index_neighbors = np.zeros((n, k - 1), dtype=index_neighbors_.dtype)
+    distance_neighbors = np.zeros((n, k - 1), dtype=distance_neighbors_.dtype)
+    for i in range(n):
+        j1 = j2 = 0
+        while j1 < (k - 1) and j2 < k:
+            if index_neighbors_[i, j2] != i:
+                index_neighbors[i, j1] = index_neighbors_[i, j2]
+                distance_neighbors[i, j1] = distance_neighbors_[i, j2]
+                j1 += 1
+
+            j2 += 1
+
+    return index_neighbors, distance_neighbors

@@ -18,7 +18,7 @@ import numpy as np
 import sys
 from pynndescent import NNDescent
 from lid_estimators import lid_mle_amsaleg
-from utils import remove_self_neighbors
+from metrics_custom import remove_self_neighbors
 from sklearn.neighbors import NearestNeighbors
 from sklearn.mixture import GaussianMixture
 import warnings

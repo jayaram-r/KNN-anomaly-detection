@@ -1,6 +1,5 @@
 
 import numpy as np
-import numba
 from generate_data import MFA_model
 from sklearn.metrics import (
     roc_curve,
@@ -100,28 +99,3 @@ def metrics_detection(scores, labels, pos_label=1, max_fpr=0.01, verbose=True):
             print("{:.6f}, {:.6f}".format(tpr[i], fpr[i]))
 
     return au_roc, au_roc_partial, avg_prec, tpr, fpr
-
-
-@numba.njit()
-def remove_self_neighbors(index_neighbors_, distance_neighbors_):
-    """
-    Given the index and distances of k nearest neighbors of a list of query points, remove points from their
-    own neighbor list.
-
-    :param index_neighbors_: numpy array of the index of `k` neighbors for a list of points. Has shape `(n, k)`,
-                             where `n` is the number of query points.
-    :param distance_neighbors_: numpy array of the distance of `k` neighbors for a list of points.
-                                Also has shape `(n, k)`.
-
-    :return: (index_neighbors, distance_neighbors), where each of them has shape `(n, k - 1)`.
-    """
-    n, k = index_neighbors_.shape
-    index_neighbors = np.zeros((n, k - 1), dtype=index_neighbors_.dtype)
-    distance_neighbors = np.zeros((n, k - 1), dtype=distance_neighbors_.dtype)
-    for i in range(n):
-        mask = np.where(index_neighbors_[i, :] != i)[0]
-        for j in range(k - 1):
-            index_neighbors[i, j] = index_neighbors_[i, mask[j]]
-            distance_neighbors[i, j] = distance_neighbors_[i, mask[j]]
-
-    return index_neighbors, distance_neighbors
