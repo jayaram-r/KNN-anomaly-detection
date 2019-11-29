@@ -92,6 +92,7 @@ class averaged_KLPE_anomaly_detection:
 
         self.data_train = None
         self.neighborhood_range = None
+        self.n_neighbors_snn = None
         self.index_knn = None
         self.dist_stat_nominal = None
         np.random.seed(self.seed_rng)
@@ -112,6 +113,9 @@ class averaged_KLPE_anomaly_detection:
         low = self.n_neighbors - int(np.floor(0.5 * (self.n_neighbors - 1)))
         high = self.n_neighbors + int(np.floor(0.5 * self.n_neighbors))
         self.neighborhood_range = (low, high)
+
+        # Number of neighbors to use for calculating the shared nearest neighbor distance
+        self.n_neighbors_snn = self.neighborhood_range[1]
 
         # Build the KNN graphs
         self.index_knn = self.build_knn_graphs(data)
@@ -168,10 +172,10 @@ class averaged_KLPE_anomaly_detection:
             index_knn_primary.fit(data)
 
         if self.shared_nearest_neighbors:
-            # Since each point will be selected as its own nearest neighbor, we query for `self.n_neighbors + 1`
-            # neighbors and remove the self neighbors
+            # Since each point will be selected as its own nearest neighbor, we query for
+            # `self.n_neighbors_snn + 1` neighbors and remove each point from its own neighbor set
             data_neighbors, _ = remove_self_neighbors(
-                *self.query_wrapper(data, index_knn_primary, self.n_neighbors + 1)
+                *self.query_wrapper(data, index_knn_primary, self.n_neighbors_snn + 1)
             )
 
             # Construct another KNN index that uses the shared nearest neighbor distance
@@ -212,10 +216,10 @@ class averaged_KLPE_anomaly_detection:
             # Query an extra neighbor when the points are part of the KNN graph
             k1 = self.neighborhood_range[0] + 1
             k2 = self.neighborhood_range[1] + 1
-            k = self.n_neighbors + 1
+            k = self.n_neighbors_snn + 1
         else:
             k1, k2 = self.neighborhood_range
-            k = self.n_neighbors
+            k = self.n_neighbors_snn
 
         if self.shared_nearest_neighbors:
             # Query the `k2` nearest neighbors based on the SNN distance
