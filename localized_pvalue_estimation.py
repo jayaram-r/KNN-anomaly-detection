@@ -13,17 +13,43 @@ IEEE Statistical Signal Processing Workshop (SSP). IEEE, 2012.
 from __future__ import division
 import numpy as np
 import sys
+import multiprocessing
+from functools import partial
 from pynndescent import NNDescent
 from sklearn.neighbors import NearestNeighbors
+from sklearn.metrics import pairwise_distances
 from metrics_custom import (
     distance_SNN,
-    neighborhood_membership_vectors
+    remove_self_neighbors
 )
 import warnings
 from numba import NumbaPendingDeprecationWarning
 
 # Suppress numba warnings
 warnings.filterwarnings('ignore', '', NumbaPendingDeprecationWarning)
+
+
+def helper_distance(data1, data2, nn_indices, metric, metric_kwargs, k, i):
+    if metric_kwargs is None:
+        pd = pairwise_distances(
+            data1[i, :].reshape(1, -1),
+            Y=data2[nn_indices[i, :], :],
+            metric=metric,
+            n_jobs=1
+        )
+    else:
+        pd = pairwise_distances(
+            data1[i, :].reshape(1, -1),
+            Y=data2[nn_indices[i, :], :],
+            metric=metric,
+            n_jobs=1,
+            **metric_kwargs
+        )
+
+    # Sort the distances and compute the mean starting from the k-th distance
+    pd = np.sort(pd[0, :])
+
+    return np.mean(pd[(k - 1):])
 
 
 class averaged_KLPE_anomaly_detection:
@@ -64,7 +90,7 @@ class averaged_KLPE_anomaly_detection:
         self.n_jobs = n_jobs
         self.seed_rng = seed_rng
 
-        self.num_samples = None
+        self.data_train = None
         self.neighborhood_range = None
         self.index_knn = None
         self.dist_stat_nominal = None
@@ -77,7 +103,7 @@ class averaged_KLPE_anomaly_detection:
         :return: None
         """
         N, d = data.shape
-        self.num_samples = N
+        self.data_train = data
         if self.n_neighbors is None:
             # Set number of nearest neighbors based on the data size and the neighborhood constant
             self.n_neighbors = int(np.ceil(N ** self.neighborhood_constant))
@@ -119,7 +145,6 @@ class averaged_KLPE_anomaly_detection:
         :param rho: `rho` parameter used by the `NN-descent` method.
         :return: A list with one or two KNN indices.
         """
-        N, d = data.shape
         if self.approx_nearest_neighbors:
             # Construct an approximate nearest neighbor (ANN) index to query nearest neighbors
             params = {
@@ -143,21 +168,13 @@ class averaged_KLPE_anomaly_detection:
             index_knn_primary.fit(data)
 
         if self.shared_nearest_neighbors:
-            # Query the `self.n_neighbors` nearest neighbors of each point.
             # Since each point will be selected as its own nearest neighbor, we query for `self.n_neighbors + 1`
-            # neighbors and ignore the self neighbors
-            nn_indices, _ = self.query_wrapper(data, index_knn_primary, self.n_neighbors + 1)
+            # neighbors and remove the self neighbors
+            data_neighbors, _ = remove_self_neighbors(
+                *self.query_wrapper(data, index_knn_primary, self.n_neighbors + 1)
+            )
 
-            # Create the neighborhood membership vector for each point.
-            # `data_neighbors` will be numpy array of 0s and 1s, with shape `(N, N)` and dtype `np.uint8`
-            data_neighbors = neighborhood_membership_vectors(nn_indices, N)
-
-            # Set the diagonal elements of `data_neighbors` to 0 because we don't want a point to be in its
-            # own neighborhood set
-            np.fill_diagonal(data_neighbors, 0)
-
-            # Construct another KNN index for the binary membership data using the shared nearest neighbor
-            # distance metric
+            # Construct another KNN index that uses the shared nearest neighbor distance
             if self.approx_nearest_neighbors:
                 params = {
                     'metric': distance_SNN,
@@ -192,7 +209,7 @@ class averaged_KLPE_anomaly_detection:
         :return dist_stat: numpy array of distance statistic for each point.
         """
         if exclude_self:
-            # Query an extra neighbor because the points are part of the KNN graph
+            # Query an extra neighbor when the points are part of the KNN graph
             k1 = self.neighborhood_range[0] + 1
             k2 = self.neighborhood_range[1] + 1
             k = self.n_neighbors + 1
@@ -201,23 +218,49 @@ class averaged_KLPE_anomaly_detection:
             k = self.n_neighbors
 
         if self.shared_nearest_neighbors:
-            # Query the `k` nearest neighbors
-            nn_indices_, _ = self.query_wrapper(data, self.index_knn[0], k)
-
-            # Create the neighborhood membership vector for each point
-            data_neighbors = neighborhood_membership_vectors(nn_indices_, self.num_samples)
-
+            # Query the `k2` nearest neighbors based on the SNN distance
             if exclude_self:
-                # Set the diagonal elements of `data_neighbors` to 0 because we don't want a point to be in its
-                # own neighborhood set
-                np.fill_diagonal(data_neighbors, 0)
+                nn_indices, _ = remove_self_neighbors(*self.query_wrapper(data, self.index_knn[0], k))
+                nn_indices, _ = remove_self_neighbors(*self.query_wrapper(nn_indices, self.index_knn[1], k2))
+            else:
+                nn_indices, _ = self.query_wrapper(data, self.index_knn[0], k)
+                nn_indices, _ = self.query_wrapper(nn_indices, self.index_knn[1], k2)
 
-            nn_indices, nn_distances = self.query_wrapper(data_neighbors, self.index_knn[1], k2)
+            # The distance statistic is calculated based on the primary distance metric, but within the
+            # neighborhood set found using the SNN distance. The idea is that for high-dimensional data,
+            # the neighborhood found using SNN is more reliable compared to the primary distance metric
+            dist_stat = self.distance_statistic_local(data, nn_indices, self.neighborhood_range[0])
         else:
             nn_indices, nn_distances = self.query_wrapper(data, self.index_knn[0], k2)
+            dist_stat = np.mean(nn_distances[:, (k1 - 1):], axis=1)
 
-        dist_stat = np.mean(nn_distances[:, (k1 - 1):], axis=1)
         return dist_stat
+
+    def distance_statistic_local(self, data, nn_indices, k):
+        """
+        Computes the mean distance statistic for each row of `data` within a local neighborhood specified by
+        `nn_indices`.
+
+        :param data: numpy data array of shape `(N, d)`, where `N` is the number of samples and `d` is the number
+                     of dimensions (features).
+        :param nn_indices: numpy array of `p` nearest neighbor indices with shape `(N, p)`.
+        :param k: start index of the neighbor from which the mean distance is computed.
+        :return dist_array: numpy array of shape `(N, )` with the mean distance values.
+        """
+        n = data.shape[0]
+        if self.n_jobs == 1:
+            dist_stat = [helper_distance(data, self.data_train, nn_indices, self.metric, self.metric_kwargs, k, i)
+                         for i in range(n)]
+        else:
+            helper_distance_partial = partial(helper_distance, data, self.data_train, nn_indices, self.metric,
+                                              self.metric_kwargs, k)
+            pool_obj = multiprocessing.Pool(processes=self.n_jobs)
+            dist_stat = []
+            _ = pool_obj.map_async(helper_distance_partial, range(n), callback=dist_stat.extend)
+            pool_obj.close()
+            pool_obj.join()
+
+        return np.array(dist_stat)
 
     def query_wrapper(self, data, index, k):
         """

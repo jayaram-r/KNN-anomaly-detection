@@ -3,13 +3,7 @@ Some custom distance metrics and similarity measures.
 """
 from __future__ import division
 import numpy as np
-from numba import (
-    njit,
-    prange,
-    float64,
-    int64,
-    int8
-)
+from numba import njit, float64, int64
 from numba.types import Tuple
 
 
@@ -113,7 +107,7 @@ def distance_angular_3tensors(x, y, shape=(1, 1, 1)):
     return np.arccos(s)
 
 
-@njit(fastmath=True)
+@njit()
 def distance_SNN(x, y):
     """
     Shared nearest neighbor distance metric. This is a secondary (ranking-based) distance measure.
@@ -134,59 +128,28 @@ def distance_SNN(x, y):
     Houle, Michael E., et al. "Can shared-neighbor distances defeat the curse of dimensionality?."
     International Conference on Scientific and Statistical Database Management. Springer, Berlin, Heidelberg, 2010.
 
-    :param x: numpy array of shape `(N, )` with binary values 0 or 1. 1 indicates the presence of neighbor.
-    :param y: numpy array of shape `(N, )` with binary values 0 or 1. 1 indicates the presence of neighbor.
+    :param x: numpy array of shape `(k1, )` and dtype `int` with the indices of the neighbors.
+    :param y: numpy array of shape `(k2, )` and dtype `int` with the indices of the neighbors.
     :return: SNN distance which should be in the range [0, \pi].
     """
-    # Number of ones (neighbors) in x
-    mask_x = x > 0.
-    s_x = mask_x[mask_x].shape[0]
+    # Neighborhood size of each point
+    s_x = x.shape[0]
+    s_y = y.shape[0]
 
-    # Number of ones (neighbors) in y
-    mask_y = y > 0.
-    s_y = mask_y[mask_y].shape[0]
+    # Size of neighborhood overlap.
+    # Using loops since the numpy functions such as `numpy.isin` and `numpy.intersect1d` are not supported by numba
+    s_xy = 0.
+    for i in x:
+        for j in y:
+            if i == j:
+                s_xy += 1.
+                break
 
-    # Number of overlapping neighbors
-    mask_xy = np.logical_and(mask_x, mask_y)
-    s_xy = mask_xy[mask_xy].shape[0]
-
-    # Cosine angular distance
-    if s_x > 0. and s_y > 0.:
-        cs = s_xy / ((s_x * s_y) ** 0.5)
-        # Clip values to the range `[-1, 1]`, the domain of arc-cosine
-        dist = np.arccos(max(-1., min(1., cs)))
-    elif s_x <= 0. and s_y <= 0.:
-        # Both vector of 0s
-        dist = 0.0
-    else:
-        # only one of them is a vectors of 0s
-        dist = np.pi
+    cs = s_xy / ((s_x * s_y) ** 0.5)
+    # Clip values to the range `[-1, 1]`, the domain of arc-cosine
+    dist = np.arccos(max(-1., min(1., cs)))
 
     return dist
-
-
-# TODO: convert the output to a sparse matrix to be memory efficient
-@njit(int8[:, :](int64[:, :], int64), parallel=True)
-def neighborhood_membership_vectors(index_neighbors, n):
-    """
-    A simple utility to convert the nearest neighbor indices to set membership binary vectors. This is used
-    in the calculation of shared nearest neighbor distance.
-
-    :param index_neighbors: numpy array of shape `(m, k)` with the index of the `k` nearest neighbors of the
-                            `m` points. Index starts at 0.
-    :param n: total number of points.
-
-    :return: an array with the set membership 0/1 values. Has shape `(m, n)`.
-    """
-    m = index_neighbors.shape[0]
-    x = np.zeros((m, n), dtype=np.int8)
-    for i in prange(m):
-        for j in index_neighbors[i, :]:
-            # Cannot do `x[i, index_neighbors[i, :]]` because `numba` does not support it.
-            # But this inner loop is usually very small (order of 10s)
-            x[i, j] = 1
-
-    return x
 
 
 @njit(Tuple((int64[:, :], float64[:, :]))(int64[:, :], float64[:, :]))
