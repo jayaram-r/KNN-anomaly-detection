@@ -13,7 +13,6 @@ International Conference on Knowledge Discovery and Data Mining. ACM, 2015.
 arXiv preprint arXiv:1801.02613 (2018).
 
 """
-from __future__ import division
 import numpy as np
 import sys
 from pynndescent import NNDescent

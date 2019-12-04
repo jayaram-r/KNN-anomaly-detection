@@ -10,23 +10,12 @@ Qian, Jing, and Venkatesh Saligrama. "New statistic in p-value estimation for an
 IEEE Statistical Signal Processing Workshop (SSP). IEEE, 2012.
 
 """
-from __future__ import division
 import numpy as np
 import sys
 import multiprocessing
 from functools import partial
-from pynndescent import NNDescent
-from sklearn.neighbors import NearestNeighbors
+from knn_index import KNNIndex
 from sklearn.metrics import pairwise_distances
-from metrics_custom import (
-    distance_SNN,
-    remove_self_neighbors
-)
-import warnings
-from numba import NumbaPendingDeprecationWarning
-
-# Suppress numba warnings
-warnings.filterwarnings('ignore', '', NumbaPendingDeprecationWarning)
 
 
 def helper_distance(data1, data2, nn_indices, metric, metric_kwargs, k, i):
@@ -48,7 +37,6 @@ def helper_distance(data1, data2, nn_indices, metric, metric_kwargs, k, i):
 
     # Sort the distances and compute the mean starting from the k-th distance
     pd = np.sort(pd[0, :])
-
     return np.mean(pd[(k - 1):])
 
 
@@ -92,7 +80,6 @@ class averaged_KLPE_anomaly_detection:
 
         self.data_train = None
         self.neighborhood_range = None
-        self.n_neighbors_snn = None
         self.index_knn = None
         self.dist_stat_nominal = None
         np.random.seed(self.seed_rng)
@@ -114,12 +101,15 @@ class averaged_KLPE_anomaly_detection:
         high = self.n_neighbors + int(np.floor(0.5 * self.n_neighbors))
         self.neighborhood_range = (low, high)
 
-        # Number of neighbors to use for calculating the shared nearest neighbor distance
-        self.n_neighbors_snn = self.neighborhood_range[1]
-
         # Build the KNN graphs
-        self.index_knn = self.build_knn_graphs(data)
-
+        self.index_knn = KNNIndex(
+            data, n_neighbors=self.neighborhood_range[1],
+            metric=self.metric, metric_kwargs=self.metric_kwargs,
+            shared_nearest_neighbors=self.shared_nearest_neighbors,
+            approx_nearest_neighbors=self.approx_nearest_neighbors,
+            n_jobs=self.n_jobs,
+            seed_rng=self.seed_rng
+        )
         # Compute the distance statistic for every data point
         self.dist_stat_nominal = self.distance_statistic(data, exclude_self=True)
 
@@ -140,69 +130,6 @@ class averaged_KLPE_anomaly_detection:
         # Negative log of the p-value is returned as the anomaly score
         return -1.0 * np.log(np.clip(score, sys.float_info.min, None))
 
-    def build_knn_graphs(self, data, min_n_neighbors=20, rho=0.5):
-        """
-        Build a KNN index for the given data set.
-        :param data: numpy data array of shape `(N, d)`, where `N` is the number of samples and `d` is the number
-                     of dimensions (features).
-        :param min_n_neighbors: minimum number of nearest neighbors to use for the `NN-descent` method.
-        :param rho: `rho` parameter used by the `NN-descent` method.
-        :return: A list with one or two KNN indices.
-        """
-        if self.approx_nearest_neighbors:
-            # Construct an approximate nearest neighbor (ANN) index to query nearest neighbors
-            params = {
-                'metric': self.metric,
-                'metric_kwds': self.metric_kwargs,
-                'n_neighbors': max(1 + self.neighborhood_range[1], min_n_neighbors),
-                'rho': rho,
-                'random_state': self.seed_rng,
-                'n_jobs': self.n_jobs
-            }
-            index_knn_primary = NNDescent(data, **params)
-        else:
-            # Construct the exact KNN graph
-            index_knn_primary = NearestNeighbors(
-                n_neighbors=(1 + self.neighborhood_range[1]),
-                algorithm='brute',
-                metric=self.metric,
-                metric_params=self.metric_kwargs,
-                n_jobs=self.n_jobs
-            )
-            index_knn_primary.fit(data)
-
-        if self.shared_nearest_neighbors:
-            # Since each point will be selected as its own nearest neighbor, we query for
-            # `self.n_neighbors_snn + 1` neighbors and remove each point from its own neighbor set
-            data_neighbors, _ = remove_self_neighbors(
-                *self.query_wrapper(data, index_knn_primary, self.n_neighbors_snn + 1)
-            )
-
-            # Construct another KNN index that uses the shared nearest neighbor distance
-            if self.approx_nearest_neighbors:
-                params = {
-                    'metric': distance_SNN,
-                    'n_neighbors': max(1 + self.neighborhood_range[1], min_n_neighbors),
-                    'rho': rho,
-                    'random_state': self.seed_rng,
-                    'n_jobs': self.n_jobs
-                }
-                index_knn_secondary = NNDescent(data_neighbors, **params)
-            else:
-                index_knn_secondary = NearestNeighbors(
-                    n_neighbors=(1 + self.neighborhood_range[1]),
-                    algorithm='brute',
-                    metric=distance_SNN,
-                    n_jobs=self.n_jobs
-                )
-                index_knn_secondary.fit(data_neighbors)
-
-            index_knn = [index_knn_primary, index_knn_secondary]
-        else:
-            index_knn = [index_knn_primary]
-
-        return index_knn
-
     def distance_statistic(self, data, exclude_self=False):
         """
         Calculate the average distance statistic by querying the nearest neighbors of the given set of points.
@@ -212,31 +139,15 @@ class averaged_KLPE_anomaly_detection:
         :param exclude_self: Set to True if the points in `data` were already used to build the KNN index.
         :return dist_stat: numpy array of distance statistic for each point.
         """
-        if exclude_self:
-            # Query an extra neighbor when the points are part of the KNN graph
-            k1 = self.neighborhood_range[0] + 1
-            k2 = self.neighborhood_range[1] + 1
-            k = self.n_neighbors_snn + 1
-        else:
-            k1, k2 = self.neighborhood_range
-            k = self.n_neighbors_snn
-
+        nn_indices, nn_distances = self.index_knn.query(data, k=self.neighborhood_range[1],
+                                                        exclude_self=exclude_self)
         if self.shared_nearest_neighbors:
-            # Query the `k2` nearest neighbors based on the SNN distance
-            if exclude_self:
-                nn_indices, _ = remove_self_neighbors(*self.query_wrapper(data, self.index_knn[0], k))
-                nn_indices, _ = remove_self_neighbors(*self.query_wrapper(nn_indices, self.index_knn[1], k2))
-            else:
-                nn_indices, _ = self.query_wrapper(data, self.index_knn[0], k)
-                nn_indices, _ = self.query_wrapper(nn_indices, self.index_knn[1], k2)
-
             # The distance statistic is calculated based on the primary distance metric, but within the
             # neighborhood set found using the SNN distance. The idea is that for high-dimensional data,
-            # the neighborhood found using SNN is more reliable compared to the primary distance metric
+            # the neighborhood found using SNN is more reliable
             dist_stat = self.distance_statistic_local(data, nn_indices, self.neighborhood_range[0])
         else:
-            nn_indices, nn_distances = self.query_wrapper(data, self.index_knn[0], k2)
-            dist_stat = np.mean(nn_distances[:, (k1 - 1):], axis=1)
+            dist_stat = np.mean(nn_distances[:, (self.neighborhood_range[0] - 1):], axis=1)
 
         return dist_stat
 
@@ -265,20 +176,3 @@ class averaged_KLPE_anomaly_detection:
             pool_obj.join()
 
         return np.array(dist_stat)
-
-    def query_wrapper(self, data, index, k):
-        """
-        Unified wrapper for querying both the approximate and the exact KNN index.
-
-        :param data: numpy data array of shape `(N, d)`, where `N` is the number of samples and `d` is the number
-                     of dimensions (features).
-        :param index: KNN index.
-        :param k: number of nearest neighbors to query.
-        :return:
-        """
-        if self.approx_nearest_neighbors:
-            nn_indices, nn_distances = index.query(data, k=k)
-        else:
-            nn_distances, nn_indices = index.kneighbors(data, n_neighbors=k)
-
-        return nn_indices, nn_distances

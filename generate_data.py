@@ -1,7 +1,6 @@
 """
 Generate data that follows a mixture of factor analyzers (MFA) model
 """
-from __future__ import absolute_import, division, print_function
 import numpy as np
 from numba import njit
 import logging

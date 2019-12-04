@@ -1,7 +1,6 @@
 """
 Some custom distance metrics and similarity measures.
 """
-from __future__ import division
 import numpy as np
 from numba import njit, float64, int64
 from numba.types import Tuple

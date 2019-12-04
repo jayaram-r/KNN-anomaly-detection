@@ -2,10 +2,12 @@
 Methods for (local) intrinsic dimension estimation based on nearest neighbor distances.
 
 """
-from __future__ import division
 import numpy as np
 from scipy import stats
 import sys
+from pynndescent import NNDescent
+from sklearn.neighbors import NearestNeighbors
+from metrics_custom import remove_self_neighbors
 
 
 def lid_mle_amsaleg(knn_distances):
@@ -60,3 +62,74 @@ def id_two_nearest_neighbors(knn_distances):
     slope, intercept, _, _, _ = stats.linregress(xs, ys)
 
     return slope
+
+
+def estimate_intrinsic_dimension(data,
+                                 method='two_nn',       # method choices are {'two_nn', 'lid_mle'}
+                                 neighborhood_constant=0.4, n_neighbors=None,
+                                 approx_nearest_neighbors=True,
+                                 n_jobs=1,
+                                 seed_rng=123):
+    """
+    Wrapper function for estimating the intrinsic dimension of the data.
+
+    :param data: data array of shape `(N, d)`, where `N` is the number of samples and `d` is the number of features.
+    :param method: method string. Valid choices are 'two_nn' and 'lid_mle'.
+    :param neighborhood_constant: float value in (0, 1), that specifies the number of nearest neighbors as a function
+                                  of the number of samples (data size). If `N` is the number of samples, then the
+                                  number of neighbors is set to `N^neighborhood_constant`. It is recommended to set
+                                  this value in the range 0.4 to 0.5.
+    :param n_neighbors: None or int value specifying the number of nearest neighbors. If this value is specified,
+                        the `neighborhood_constant` is ignored. It is sufficient to specify either
+                        `neighborhood_constant` or `n_neighbors`.
+    :param approx_nearest_neighbors: Set to True to use an approximate nearest neighbor method. Usually the right
+                                     choice unless both the number of samples are features are small.
+    :param n_jobs: number of CPU cores to use.
+    :param seed_rng: seed for the random number generator.
+
+    :return: positive float value specifying the estimated intrinsic dimension.
+    """
+    if n_neighbors is None:
+        # Set number of nearest neighbors based on the data size and the neighborhood constant
+        n_neighbors = int(np.ceil(data.shape[0] ** neighborhood_constant))
+
+    if approx_nearest_neighbors:
+        # Construct an approximate nearest neighbor (ANN) index to query nearest neighbors
+        params = {
+            'metric': 'euclidean',
+            'n_neighbors': max(n_neighbors + 1, 20),
+            'rho': 0.5,
+            'random_state': seed_rng,
+            'n_jobs': n_jobs
+        }
+        index_knn = NNDescent(data, **params)
+
+        # Query the nearest neighbors of each point
+        nn_indices_, nn_distances_ = index_knn.query(data, k=(n_neighbors + 1))
+    else:
+        # Construct the exact KNN graph
+        index_knn = NearestNeighbors(
+            n_neighbors=(n_neighbors + 1),
+            algorithm='brute',
+            metric='euclidean',
+            n_jobs=n_jobs
+        )
+        index_knn.fit(data)
+
+        # Query the nearest neighbors of each point
+        nn_distances_, nn_indices_ = index_knn.kneighbors(data, n_neighbors=(n_neighbors + 1))
+
+    # Since each point will be included in its own neighborhood set, they should be removed
+    _, nn_distances = remove_self_neighbors(nn_indices_, nn_distances_)
+
+    method = method.lower()
+    if method == 'two_nn':
+        # Two nearest neighbors ID estimator
+        id = id_two_nearest_neighbors(nn_distances)
+    elif method == 'lid_mle':
+        # Median of the local intrinsic dimension estimates around each point
+        id = np.median(lid_mle_amsaleg(nn_distances))
+    else:
+        raise ValueError("Invalid value '{}' specified for argument 'method'".format(method))
+
+    return id
