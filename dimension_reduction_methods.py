@@ -80,7 +80,7 @@ def calculate_heat_kernel(data, nn_indices, heat_kernel_param, metric, metric_kw
     :return: Heat kernel values returned as a numpy array of shape `(N, K)`.
     """
     N, K = nn_indices.shape
-    if self.n_jobs == 1:
+    if n_jobs == 1:
         dist_mat = [helper_distance(data, nn_indices, metric, metric_kwargs, i) for i in range(N)]
     else:
         helper_distance_partial = partial(helper_distance, data, nn_indices, metric, metric_kwargs)
@@ -94,9 +94,54 @@ def calculate_heat_kernel(data, nn_indices, heat_kernel_param, metric, metric_kw
     if heat_kernel_param is None:
         # Heuristic choice: setting the kernel parameter such that the kernel value is equal to `0.1` for the
         # maximum pairwise distance among all neighboring pairs
-        heat_kernel_param = np.max(dist_mat) / np.log(10.)
+        heat_kernel_param = np.percentile(dist_mat, 99.9) / np.log(10.)
 
     return np.exp((-1.0 / heat_kernel_param) * dist_mat)
+
+
+def pca_wrapper(data, dim_red=None, cutoff=1.0, seed_rng=123):
+    """
+    Find the PCA transformation for the provided data, which is assumed to be centered.
+
+    :param data: data matrix of shape `(N, d)` where `N` is the number of samples and `d` is the number of
+                 dimensions.
+    :param dim_red: None or int value (>= 1) specifying the dimension of the PCA projection.
+    :param cutoff: variance cutoff value in (0, 1].
+    :param seed_rng: seed for random number generator.
+
+    :return: (data_trans, mean_data, transform_pca), where
+        - data_trans: Transformed, dimension reduced data matrix of shape `(N, d_red)`.
+        - mean_data: numpy array with the sample mean value of each feature.
+        - transform_pca: numpy array with the PCA transformation matrix.
+    """
+    N, d = data.shape
+    mod_pca = PCA(n_components=min(N, d), random_state=seed_rng)
+    _ = mod_pca.fit(data)
+
+    # Number of components with non-zero singular values
+    sig = mod_pca.singular_values_
+    n1 = sig[sig > 1e-16].shape[0]
+    logger.info("Number of nonzero singular values in the data matrix = {:d}".format(n1))
+
+    # Number of components accounting for the specified fraction of the cumulative data variance
+    var_cum = np.cumsum(mod_pca.explained_variance_)
+    var_cum_frac = var_cum / var_cum[-1]
+    ind = np.where(var_cum_frac >= cutoff)[0]
+    if ind.shape[0]:
+        n2 = ind[0] + 1
+    else:
+        n2 = var_cum.shape[0]
+
+    logger.info("Number of principal components accounting for {:.1f} percent of the data variance = {:d}".
+                format(100 * cutoff, n2))
+    if dim_red is None:
+        dim_red = min(n1, n2)
+
+    logger.info("Dimension of the PCA transformed data = {:d}".format(dim_red))
+    transform_pca = mod_pca.components_[:dim_red, :].T
+    data_trans = np.dot(data - mod_pca.mean_, transform_pca)
+
+    return data_trans, mod_pca.mean_, transform_pca
 
 
 class LocalityPreservingProjection:
@@ -210,9 +255,9 @@ class LocalityPreservingProjection:
             # Set number of nearest neighbors based on the data size and the neighborhood constant
             self.n_neighbors = int(np.ceil(N ** self.neighborhood_constant))
 
-        # Apply a PCA transformation to the data as a pre-processing step
-        data = self.pca_wrapper(data, cutoff=self.pca_cutoff)
-
+        logger.info("Applying PCA as first-level dimension reduction step")
+        data, self.mean_data, self.transform_pca = pca_wrapper(data, cutoff=self.pca_cutoff,
+                                                               seed_rng=self.seed_rng)
         if self.dim_projection == 'auto':
             # Estimate the intrinsic dimension of the data and use that as the projected dimension
             id = estimate_intrinsic_dimension(data,
@@ -227,7 +272,7 @@ class LocalityPreservingProjection:
         if self.dim_projection >= data.shape[1]:
             self.dim_projection = data.shape[1] - 1
 
-        logger.info("Dimension of the projected subspace = {:d}.".format(self.dim_projection))
+        logger.info("Dimension of the projected subspace = {:d}".format(self.dim_projection))
 
         # Create a KNN index for all nearest neighbor tasks
         self.index_knn = KNNIndex(
@@ -314,43 +359,3 @@ class LocalityPreservingProjection:
 
         # Graph laplacian matrix (L = D - W)
         self.laplacian_matrix = self.incidence_matrix - self.adjacency_matrix
-
-    def pca_wrapper(self, data, cutoff=1.0):
-        """
-        Find the PCA transformation for the provided data, which is assumed to be centered.
-
-        :param data: data matrix of shape `(N, d)` where `N` is the number of samples and `d` is the number of
-                     dimensions.
-        :param cutoff: variance cutoff value in (0, 1].
-        :return:
-            data_trans: Transformed, dimension reduced data matrix of shape `(N, d_red)`.
-        """
-        N, d = data.shape
-        logger.info("Applying PCA as first-level dimension reduction step.")
-        mod_pca = PCA(n_components=min(N, d), random_state=self.seed_rng)
-        _ = mod_pca.fit(data)
-
-        # Number of components with non-zero singular values
-        sig = mod_pca.singular_values_
-        n1 = sig[sig > 1e-16].shape[0]
-        logger.info("Number of nonzero singular values in the data matrix = {:d}".format(n1))
-
-        # Number of components accounting for the specified fraction of the cumulative data variance
-        var_cum = np.cumsum(mod_pca.explained_variance_)
-        var_cum_frac = var_cum / var_cum[-1]
-        ind = np.where(var_cum_frac >= cutoff)[0]
-        if ind.shape[0]:
-            n2 = ind[0] + 1
-        else:
-            n2 = var_cum.shape[0]
-
-        logger.info("Number of principal components accounting for {:.2f} fraction of the data variance = {:d}".
-                    format(cutoff, n2))
-        d_red = min(n1, n2)
-        logger.info("Dimension of the PCA transformed data = {:d}".format(d_red))
-
-        self.mean_data = mod_pca.mean_
-        self.transform_pca = mod_pca.components_[:d_red, :].T
-
-        data_trans = data - self.mean_data
-        return np.dot(data_trans, self.transform_pca)
