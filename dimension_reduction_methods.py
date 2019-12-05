@@ -25,7 +25,12 @@ Note that [4] also implements a variation of the OLPP method, but we do not impl
 
 """
 import numpy as np
+from scipy import sparse
+from scipy.linalg import eigh
 from sklearn.decomposition import PCA
+from sklearn.metrics import pairwise_distances
+import multiprocessing
+from functools import partial
 from lid_estimators import estimate_intrinsic_dimension
 from knn_index import KNNIndex
 import logging
@@ -33,6 +38,65 @@ import logging
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def helper_distance(data, nn_indices, metric, metric_kwargs, i):
+    """
+    Helper function to calculate pairwise distances.
+    """
+    if metric_kwargs is None:
+        pd = pairwise_distances(
+            data[i, :].reshape(1, -1),
+            Y=data[nn_indices[i, :], :],
+            metric=metric,
+            n_jobs=1
+        )
+    else:
+        pd = pairwise_distances(
+            data[i, :].reshape(1, -1),
+            Y=data[nn_indices[i, :], :],
+            metric=metric,
+            n_jobs=1,
+            **metric_kwargs
+        )
+    return pd[0, :]
+
+
+def calculate_heat_kernel(data, nn_indices, heat_kernel_param, metric, metric_kwargs=None, n_jobs=1):
+    """
+    Calculate the heat kernel values for sample pairs in `data` that are nearest neighbors (given by `nn_indices`).
+
+    :param data: data matrix of shape `(N, d)` where `N` is the number of samples and `d` is the number of
+                 dimensions.
+    :param nn_indices: numpy array of shape `(N, K)` with the index of `K` nearest neighbors for each of the
+                       `N` samples.
+    :param heat_kernel_param: None or a float value specifying the heat kernel scale parameter. If set to None,
+                              this parameter will be set to suitable value based on the median of the pairwise
+                              distances.
+    :param metric: distance metric string or callable.
+    :param metric_kwargs: None or a dict of keyword arguments to be passed to the distance metric.
+    :param n_jobs: number of CPU cores to use for parallel processing.
+
+    :return: Heat kernel values returned as a numpy array of shape `(N, K)`.
+    """
+    N, K = nn_indices.shape
+    if self.n_jobs == 1:
+        dist_mat = [helper_distance(data, nn_indices, metric, metric_kwargs, i) for i in range(N)]
+    else:
+        helper_distance_partial = partial(helper_distance, data, nn_indices, metric, metric_kwargs)
+        pool_obj = multiprocessing.Pool(processes=n_jobs)
+        dist_mat = []
+        _ = pool_obj.map_async(helper_distance_partial, range(N), callback=dist_mat.extend)
+        pool_obj.close()
+        pool_obj.join()
+
+    dist_mat = np.array(dist_mat) ** 2
+    if heat_kernel_param is None:
+        # Heuristic choice: setting the kernel parameter such that the kernel value is equal to `0.1` for the
+        # maximum pairwise distance among all neighboring pairs
+        heat_kernel_param = np.max(dist_mat) / np.log(10.)
+
+    return np.exp((-1.0 / heat_kernel_param) * dist_mat)
 
 
 class LocalityPreservingProjection:
@@ -122,12 +186,16 @@ class LocalityPreservingProjection:
             raise ValueError("Invalid value '{}' for parameter 'edge_weights'".format(self.edge_weights))
 
         if self.edge_weights == 'snn':
-            self.shared_nearest_neighbors =  True
+            self.shared_nearest_neighbors = True
 
-        self.dim = None
-        self.n_neighbors_snn = None
         self.mean_data = None
+        self.index_knn = None
+        self.adjacency_matrix = None
+        self.incidence_matrix = None
+        self.laplacian_matrix = None
         self.transform_pca = None
+        self.transform_lpp = None
+        self.transform_comb = None
 
     def fit(self, data):
         """
@@ -138,14 +206,9 @@ class LocalityPreservingProjection:
         :return:
         """
         N, d = data.shape
-        self.dim = d
         if self.n_neighbors is None:
             # Set number of nearest neighbors based on the data size and the neighborhood constant
             self.n_neighbors = int(np.ceil(N ** self.neighborhood_constant))
-
-        # Number of neighbors to use for the SNN distance
-        # self.n_neighbors_snn = int(1.5 * self.n_neighbors)
-        self.n_neighbors_snn = self.n_neighbors
 
         # Apply a PCA transformation to the data as a pre-processing step
         data = self.pca_wrapper(data, cutoff=self.pca_cutoff)
@@ -166,7 +229,91 @@ class LocalityPreservingProjection:
 
         logger.info("Dimension of the projected subspace = {:d}.".format(self.dim_projection))
 
+        # Create a KNN index for all nearest neighbor tasks
+        self.index_knn = KNNIndex(
+            data, n_neighbors=self.n_neighbors,
+            metric=self.metric, metric_kwargs=self.metric_kwargs,
+            shared_nearest_neighbors=self.shared_nearest_neighbors,
+            approx_nearest_neighbors=self.approx_nearest_neighbors,
+            n_jobs=self.n_jobs,
+            seed_rng=self.seed_rng
+        )
 
+        # Create the symmetric adjacency matrix, diagonal incidence matrix, and the graph Laplacian matrix
+        # for the data points
+        self.create_laplacian_matrix(data)
+
+        # Solve the generalized eigenvalue problem and take the eigenvectors corresponding to the smallest
+        # eigenvalues as the columns of the projection matrix
+        logger.info("Solving the generalized eigenvalue problem to find the optimal projection matrix.")
+        # X^T L X
+        lmat = sparse.csr_matrix.dot(data.T, self.laplacian_matrix).dot(data)
+        if self.orthogonal:
+            # Orthogonal LPP
+            eig_values, eig_vectors = eigh(lmat, eigvals=(0, self.dim_projection - 1))
+        else:
+            # Standard LPP
+            # X^T D X
+            rmat = sparse.csr_matrix.dot(data.T, self.incidence_matrix).dot(data)
+            eig_values, eig_vectors = eigh(lmat, b=rmat, eigvals=(0, self.dim_projection - 1))
+
+        # `eig_vectors` is a numpy array with each eigenvector along a column. The eigenvectors are ordered
+        # according to increasing eigenvalues.
+        # `eig_vectors` will have shape `(data.shape[1], self.dim_projection)`
+        self.transform_lpp = eig_vectors
+
+        self.transform_comb = np.dot(self.transform_pca, self.transform_lpp)
+
+    def transform(self, data):
+        """
+        Transform the given data by first subtracting the mean and then applying the linear projection.
+
+        :param data: numpy array of shape `(N, d)` with `N` samples in `d` dimensions.
+        :return: numpy array of shape `(N, d_red)` with `N` samples in `self.dim_projection` dimensions.
+        """
+        data_trans = data - self.mean_data
+        return np.dot(data_trans, self.transform_comb)
+
+    def create_laplacian_matrix(self, data):
+        """
+        Calculate the graph Laplacian matrix for the given data.
+
+        :param data: data matrix of shape `(N, d)` where `N` is the number of samples and `d` is the number of
+                     dimensions.
+        :return:
+        """
+        # Find the `self.n_neighbors` nearest neighbors of each point
+        nn_indices, nn_distances = self.index_knn.query(data, k=self.n_neighbors, exclude_self=True)
+
+        N, K = nn_indices.shape
+        row_ind = np.array([[i] * K for i in range(N)], dtype=np.int).flatten()
+        col_ind = nn_indices.flatten()
+        vals = []
+        if self.edge_weights == 'simple':
+            vals = np.ones(N * K)
+        elif self.edge_weights == 'snn':
+            # SNN distance is the cosine-inverse of the SNN similarity. The range of SNN distances will
+            # be [0, pi / 2]. Hence, the SNN similarity will be in the range [0, 1].
+            vals = np.clip(np.cos(nn_distances).flatten(), 0., None)
+        else:
+            # Heat kernel
+            vals = calculate_heat_kernel(
+                data, nn_indices, self.heat_kernel_param, self.metric, metric_kwargs=self.metric_kwargs,
+                n_jobs=self.n_jobs
+            ).flatten()
+
+        # Adjacency or edge weight matrix (W)
+        mat_tmp = sparse.csr_matrix((vals, (row_ind, col_ind)), shape=(N, N))
+        self.adjacency_matrix = 0.5 * (mat_tmp + mat_tmp.transpose())
+
+        # Incidence matrix (D)
+        vals_diag = self.adjacency_matrix.sum(axis=1)
+        vals_diag = np.array(vals_diag[:, 0]).flatten()
+        ind = np.arange(N)
+        self.incidence_matrix = sparse.csr_matrix((vals_diag, (ind, ind)), shape=(N, N))
+
+        # Graph laplacian matrix (L = D - W)
+        self.laplacian_matrix = self.incidence_matrix - self.adjacency_matrix
 
     def pca_wrapper(self, data, cutoff=1.0):
         """
@@ -203,7 +350,7 @@ class LocalityPreservingProjection:
         logger.info("Dimension of the PCA transformed data = {:d}".format(d_red))
 
         self.mean_data = mod_pca.mean_
-        self.transform_pca = mod_pca.components_[:d_red, :]
+        self.transform_pca = mod_pca.components_[:d_red, :].T
 
         data_trans = data - self.mean_data
-        return np.dot(data_trans, self.transform_pca.T)
+        return np.dot(data_trans, self.transform_pca)

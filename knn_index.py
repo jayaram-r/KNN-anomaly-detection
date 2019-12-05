@@ -75,8 +75,8 @@ class KNNIndex:
             self.n_neighbors = int(np.ceil(N ** self.neighborhood_constant))
 
         # Number of neighbors to use for calculating the shared nearest neighbor distance
-        # self.n_neighbors_snn = min(int(1.2 * self.n_neighbors), N - 1)
-        self.n_neighbors_snn = self.n_neighbors
+        self.n_neighbors_snn = min(int(1.2 * self.n_neighbors), N - 1)
+        # self.n_neighbors_snn = self.n_neighbors
 
         self.index_knn = self.build_knn_index(data)
 
