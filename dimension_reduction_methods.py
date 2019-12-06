@@ -99,14 +99,16 @@ def calculate_heat_kernel(data, nn_indices, heat_kernel_param, metric, metric_kw
     return np.exp((-1.0 / heat_kernel_param) * dist_mat)
 
 
-def pca_wrapper(data, dim_red=None, cutoff=1.0, seed_rng=123):
+def pca_wrapper(data, n_comp=None, cutoff=1.0, seed_rng=123):
     """
     Find the PCA transformation for the provided data, which is assumed to be centered.
 
     :param data: data matrix of shape `(N, d)` where `N` is the number of samples and `d` is the number of
                  dimensions.
-    :param dim_red: None or int value (>= 1) specifying the dimension of the PCA projection.
-    :param cutoff: variance cutoff value in (0, 1].
+    :param n_comp: None or int value (>= 1) specifying the dimension (number of components) of the PCA projection.
+                   If this value is specified, the variance cutoff threshold is not used.
+    :param cutoff: variance cutoff value in (0, 1]. This value is used to select the number of components only if
+                   `n_comp` is not specified.
     :param seed_rng: seed for random number generator.
 
     :return: (data_trans, mean_data, transform_pca), where
@@ -134,11 +136,11 @@ def pca_wrapper(data, dim_red=None, cutoff=1.0, seed_rng=123):
 
     logger.info("Number of principal components accounting for {:.1f} percent of the data variance = {:d}".
                 format(100 * cutoff, n2))
-    if dim_red is None:
-        dim_red = min(n1, n2)
+    if n_comp is None:
+        n_comp = min(n1, n2)
 
-    logger.info("Dimension of the PCA transformed data = {:d}".format(dim_red))
-    transform_pca = mod_pca.components_[:dim_red, :].T
+    logger.info("Dimension of the PCA transformed data = {:d}".format(n_comp))
+    transform_pca = mod_pca.components_[:n_comp, :].T
     data_trans = np.dot(data - mod_pca.mean_, transform_pca)
 
     return data_trans, mod_pca.mean_, transform_pca
@@ -318,6 +320,16 @@ class LocalityPreservingProjection:
         """
         data_trans = data - self.mean_data
         return np.dot(data_trans, self.transform_comb)
+
+    def fit_transform(self, data):
+        """
+        Fit the model and transform the given data.
+
+        :param data: numpy array of shape `(N, d)` with `N` samples in `d` dimensions.
+        :return: numpy array of shape `(N, d_red)` with `N` samples in `self.dim_projection` dimensions.
+        """
+        self.fit(data)
+        return self.transform(data)
 
     def create_laplacian_matrix(self, data):
         """
