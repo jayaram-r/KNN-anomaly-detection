@@ -343,21 +343,21 @@ class LocalityPreservingProjection:
         nn_indices, nn_distances = self.index_knn.query(data, k=self.n_neighbors, exclude_self=True)
 
         N, K = nn_indices.shape
-        row_ind = np.array([[i] * K for i in range(N)], dtype=np.int).flatten()
-        col_ind = nn_indices.flatten()
+        row_ind = np.array([[i] * K for i in range(N)], dtype=np.int).ravel()
+        col_ind = nn_indices.ravel()
         vals = []
         if self.edge_weights == 'simple':
             vals = np.ones(N * K)
         elif self.edge_weights == 'snn':
             # SNN distance is the cosine-inverse of the SNN similarity. The range of SNN distances will
             # be [0, pi / 2]. Hence, the SNN similarity will be in the range [0, 1].
-            vals = np.clip(np.cos(nn_distances).flatten(), 0., None)
+            vals = np.clip(np.cos(nn_distances).ravel(), 0., None)
         else:
             # Heat kernel
             vals = calculate_heat_kernel(
                 data, nn_indices, self.heat_kernel_param, self.metric, metric_kwargs=self.metric_kwargs,
                 n_jobs=self.n_jobs
-            ).flatten()
+            ).ravel()
 
         # Adjacency or edge weight matrix (W)
         mat_tmp = sparse.csr_matrix((vals, (row_ind, col_ind)), shape=(N, N))
@@ -365,7 +365,7 @@ class LocalityPreservingProjection:
 
         # Incidence matrix (D)
         vals_diag = self.adjacency_matrix.sum(axis=1)
-        vals_diag = np.array(vals_diag[:, 0]).flatten()
+        vals_diag = np.array(vals_diag[:, 0]).ravel()
         ind = np.arange(N)
         self.incidence_matrix = sparse.csr_matrix((vals_diag, (ind, ind)), shape=(N, N))
 
