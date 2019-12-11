@@ -26,7 +26,7 @@ Note that [4] also implements a variation of the OLPP method, but we do not impl
 """
 import numpy as np
 from scipy import sparse
-from scipy.linalg import eigh
+from scipy.linalg import eigh, eigvalsh, solve
 from sklearn.decomposition import PCA
 from sklearn.metrics import pairwise_distances
 import multiprocessing
@@ -293,15 +293,16 @@ class LocalityPreservingProjection:
         # Solve the generalized eigenvalue problem and take the eigenvectors corresponding to the smallest
         # eigenvalues as the columns of the projection matrix
         logger.info("Solving the generalized eigenvalue problem to find the optimal projection matrix.")
+        data_trans = data.T
         # X^T L X
-        lmat = sparse.csr_matrix.dot(data.T, self.laplacian_matrix).dot(data)
+        lmat = sparse.csr_matrix.dot(data_trans, self.laplacian_matrix).dot(data)
         if self.orthogonal:
             # Orthogonal LPP
             eig_values, eig_vectors = eigh(lmat, eigvals=(0, self.dim_projection - 1))
         else:
             # Standard LPP
             # X^T D X
-            rmat = sparse.csr_matrix.dot(data.T, self.incidence_matrix).dot(data)
+            rmat = sparse.csr_matrix.dot(data_trans, self.incidence_matrix).dot(data)
             eig_values, eig_vectors = eigh(lmat, b=rmat, eigvals=(0, self.dim_projection - 1))
 
         # `eig_vectors` is a numpy array with each eigenvector along a column. The eigenvectors are ordered
@@ -345,7 +346,6 @@ class LocalityPreservingProjection:
         N, K = nn_indices.shape
         row_ind = np.array([[i] * K for i in range(N)], dtype=np.int).ravel()
         col_ind = nn_indices.ravel()
-        vals = []
         if self.edge_weights == 'simple':
             vals = np.ones(N * K)
         elif self.edge_weights == 'snn':
@@ -371,3 +371,246 @@ class LocalityPreservingProjection:
 
         # Graph laplacian matrix (L = D - W)
         self.laplacian_matrix = self.incidence_matrix - self.adjacency_matrix
+
+
+class NeighborhoodPreservingProjection:
+    """
+    Neighborhood preserving projection (NPP) method for dimensionality reduction. Also known as neighborhood
+    preserving embedding (NPE) [1].
+    Orthogonal neighborhood preserving projection (ONPP) method is based on [2].
+
+    1. He, Xiaofei, et al. "Neighborhood preserving embedding." Tenth IEEE International Conference on Computer
+       Vision (ICCV'05) Volume 1. Vol. 2. IEEE, 2005.
+    2. Kokiopoulou, Effrosyni, and Yousef Saad. "Orthogonal neighborhood preserving projections: A projection-based
+    dimensionality reduction technique." IEEE Transactions on Pattern Analysis and Machine Intelligence,
+    29.12 (2007): 2143-2156.
+
+    """
+    def __init__(self,
+                 dim_projection='auto',                         # 'auto' or positive integer
+                 orthogonal=False,                              # True to enable Orthogonal NPP (ONPP) method
+                 pca_cutoff=1.0,
+                 neighborhood_constant=0.4, n_neighbors=None,   # Specify one of them. If `n_neighbors` is specified,
+                                                                # `neighborhood_constant` will be ignored.
+                 shared_nearest_neighbors=False,
+                 metric='euclidean', metric_kwargs=None,        # distance metric and its parameter dict (if any)
+                 approx_nearest_neighbors=True,
+                 n_jobs=1,
+                 reg_eps=0.001,
+                 seed_rng=123):
+        """
+        :param dim_projection: Dimension of data in the projected feature space. If set to 'auto', a suitable reduced
+                               dimension will be chosen by estimating the intrinsic dimension of the data. If an
+                               integer value is specified, it should be in the range `[1, dim - 1]`, where `dim`
+                               is the observed dimension of the data.
+        :param orthogonal: Set to True to select the OLPP method. It was shown to have better performance than LPP
+                           in [3].
+        :param pca_cutoff: float value in (0, 1] specifying the proportion of cumulative data variance to preserve
+                           in the projected dimension-reduced data. PCA is applied as a first-level dimension
+                           reduction to handle potential data matrix singularity also. Set `pca_cutoff = 1.0` in
+                           order to handle only the data matrix singularity.
+        :param neighborhood_constant: float value in (0, 1), that specifies the number of nearest neighbors as a
+                                      function of the number of samples (data size). If `N` is the number of samples,
+                                      then the number of neighbors is set to `N^neighborhood_constant`. It is
+                                      recommended to set this value in the range 0.4 to 0.5.
+        :param n_neighbors: None or int value specifying the number of nearest neighbors. If this value is specified,
+                            the `neighborhood_constant` is ignored. It is sufficient to specify either
+                            `neighborhood_constant` or `n_neighbors`.
+        :param shared_nearest_neighbors: Set to True in order to use the shared nearest neighbor (SNN) distance to
+                                         find the K nearest neighbors. This is a secondary distance metric that is
+                                         found to be better suited to high dimensional data.
+        :param metric: string or a callable that specifies the distance metric to be used for the SNN similarity
+                       calculation.
+        :param metric_kwargs: optional keyword arguments required by the distance metric specified in the form of a
+                              dictionary.
+        :param approx_nearest_neighbors: Set to True in order to use an approximate nearest neighbor algorithm to
+                                         find the nearest neighbors. This is recommended when the number of points is
+                                         large and/or when the dimension of the data is high.
+        :param n_jobs: Number of parallel jobs or processes. Set to -1 to use all the available cpu cores.
+        :param reg_eps: small float value that multiplies the trace to regularize the Gram matrix, if it is
+                        close to singular.
+        :param seed_rng: int value specifying the seed for the random number generator.
+        """
+        self.dim_projection = dim_projection
+        self.orthogonal = orthogonal
+        self.pca_cutoff = pca_cutoff
+        self.neighborhood_constant = neighborhood_constant
+        self.n_neighbors = n_neighbors
+        self.shared_nearest_neighbors = shared_nearest_neighbors
+        self.metric = metric
+        self.metric_kwargs = metric_kwargs
+        self.approx_nearest_neighbors = approx_nearest_neighbors
+        self.n_jobs = n_jobs
+        self.reg_eps = reg_eps
+        self.seed_rng = seed_rng
+
+        self.mean_data = None
+        self.index_knn = None
+        self.iterated_laplacian_matrix = None
+        self.transform_pca = None
+        self.transform_npp = None
+        self.transform_comb = None
+
+    def fit(self, data):
+        """
+        Find the optimal projection matrix for the given data points.
+
+        :param data: data matrix of shape `(N, d)` where `N` is the number of samples and `d` is the number of
+                     dimensions.
+        :return:
+        """
+        N, d = data.shape
+        if self.n_neighbors is None:
+            # Set number of nearest neighbors based on the data size and the neighborhood constant
+            self.n_neighbors = int(np.ceil(N ** self.neighborhood_constant))
+
+        logger.info("Applying PCA as first-level dimension reduction step")
+        data, self.mean_data, self.transform_pca = pca_wrapper(data, cutoff=self.pca_cutoff,
+                                                               seed_rng=self.seed_rng)
+
+        # If `self.neighbors > data.shape[1]` (number of neighbors larger than the data dimension), then the
+        # Gram matrix that comes up while solving for the neighborhood weights becomes singular. To avoid this,
+        # we can set `self.neighbors = data.shape[1]` or add a small nonzero value to the diagonal elements of the
+        # Gram matrix
+        d = data.shape[1]
+        if self.n_neighbors > d:
+            if d >= 25:
+                # Heuristic choice of dimension 25. Done to avoid setting the number of neighbors to be very small
+                logger.info("Reducing the number of neighbors from {:d} to {:d} to avoid singular Gram "
+                            "matrix while solving for neighborhood weights.".format(self.n_neighbors, d))
+                self.n_neighbors = d
+
+        if self.dim_projection == 'auto':
+            # Estimate the intrinsic dimension of the data and use that as the projected dimension
+            id = estimate_intrinsic_dimension(data,
+                                              method='two_nn',
+                                              n_neighbors=self.n_neighbors,
+                                              approx_nearest_neighbors=self.approx_nearest_neighbors,
+                                              n_jobs=self.n_jobs,
+                                              seed_rng=self.seed_rng)
+            self.dim_projection = int(np.ceil(id))
+            logger.info("Estimated intrinsic dimension of the (PCA-projected) data = {:.2f}.".format(id))
+
+        if self.dim_projection >= data.shape[1]:
+            self.dim_projection = data.shape[1] - 1
+
+        logger.info("Dimension of the projected subspace = {:d}".format(self.dim_projection))
+
+        # Create a KNN index for all nearest neighbor tasks
+        self.index_knn = KNNIndex(
+            data, n_neighbors=self.n_neighbors,
+            metric=self.metric, metric_kwargs=self.metric_kwargs,
+            shared_nearest_neighbors=self.shared_nearest_neighbors,
+            approx_nearest_neighbors=self.approx_nearest_neighbors,
+            n_jobs=self.n_jobs,
+            seed_rng=self.seed_rng
+        )
+
+        # Create the adjacency matrix `W` based on the optimal reconstruction weights of neighboring points
+        # (as done in locally linear embedding).
+        # Then calculate the iterated graph Laplacian matrix `M = (I - W)^T (I - W)`.
+        self.create_iterated_laplacian(data)
+
+        # Solve the generalized eigenvalue problem and take the eigenvectors corresponding to the smallest
+        # eigenvalues as the columns of the projection matrix
+        logger.info("Solving the generalized eigenvalue problem to find the optimal projection matrix.")
+        data_trans = data.T
+        # X^T M X
+        lmat = sparse.csr_matrix.dot(data_trans, self.iterated_laplacian_matrix).dot(data)
+        if self.orthogonal:
+            # OLPP, the paper [2] recommends skipping the eigenvector corresponding to the smallest eigenvalue
+            eig_values, eig_vectors = eigh(lmat, eigvals=(1, self.dim_projection))
+        else:
+            # Standard LPP
+            # X^T X
+            rmat = np.dot(data_trans, data)
+            eig_values, eig_vectors = eigh(lmat, b=rmat, eigvals=(0, self.dim_projection - 1))
+
+        # `eig_vectors` is a numpy array with each eigenvector along a column. The eigenvectors are ordered
+        # according to increasing eigenvalues.
+        # `eig_vectors` will have shape `(data.shape[1], self.dim_projection)`
+        self.transform_npp = eig_vectors
+
+        self.transform_comb = np.dot(self.transform_pca, self.transform_npp)
+
+    def transform(self, data):
+        """
+        Transform the given data by first subtracting the mean and then applying the linear projection.
+
+        :param data: numpy array of shape `(N, d)` with `N` samples in `d` dimensions.
+        :return: numpy array of shape `(N, d_red)` with `N` samples in `self.dim_projection` dimensions.
+        """
+        data_trans = data - self.mean_data
+        return np.dot(data_trans, self.transform_comb)
+
+    def fit_transform(self, data):
+        """
+        Fit the model and transform the given data.
+
+        :param data: numpy array of shape `(N, d)` with `N` samples in `d` dimensions.
+        :return: numpy array of shape `(N, d_red)` with `N` samples in `self.dim_projection` dimensions.
+        """
+        self.fit(data)
+        return self.transform(data)
+
+    def create_iterated_laplacian(self, data):
+        """
+        Calculate the optimal edge weights corresponding to the nearest neighbors of each point. This is exactly
+        the same as the first step of the locally linear embedding (LLE) method.
+
+        :param data: numpy array of shape `(N, d)` with `N` samples in `d` dimensions.
+        :return: None
+        """
+        # Find the `self.n_neighbors` nearest neighbors of each point
+        nn_indices, nn_distances = self.index_knn.query(data, k=self.n_neighbors, exclude_self=True)
+        N, K = nn_indices.shape
+
+        if self.n_jobs == 1:
+            w = [helper_solve_lle(data, nn_indices, self.reg_eps, i) for i in range(N)]
+        else:
+            helper_partial = partial(helper_solve_lle, data, nn_indices, self.reg_eps)
+            pool_obj = multiprocessing.Pool(processes=self.n_jobs)
+            w = []
+            _ = pool_obj.map_async(helper_partial, range(N), callback=w.extend)
+            pool_obj.close()
+            pool_obj.join()
+
+        # Create a sparse matrix of size `(N, N)` for the adjacency matrix
+        row_ind = np.array([[i] * (K + 1) for i in range(N)], dtype=np.int).ravel()
+        col_ind = np.insert(nn_indices, 0, np.arange(N), axis=1).ravel()
+        w = np.negative(w)
+        vals = np.insert(w, 0, 1.0, axis=1).ravel()
+        # Matrix `I - W`
+        mat_tmp = sparse.csr_matrix((vals, (row_ind, col_ind)), shape=(N, N))
+
+        # Matrix `M = (I - W)^T (I - W)`, also referred to as the iterated graph Laplacian
+        self.iterated_laplacian_matrix = sparse.csr_matrix.dot(mat_tmp.transpose(), mat_tmp)
+
+
+def solve_lle_weights(x, neighbors, reg_eps=0.001):
+    """
+    Solve for the optimal weights that reconstruct a point using its nearest neighbors. The weights are constrained
+    to be non-negative and sum to 1. This is the first step of locally linear embedding (LLE).
+
+    :param x: numpy array of shape `(1, dim)`, where `dim` is the feature dimension.
+    :param neighbors: numpy array of shape `(k, dim)`, where `k` is the number of neighbors.
+    :param reg_eps: value close to 0 that is used to regularize any singular matrix.
+    :return: numpy array with the optimal weights of shape `(k, 1)`.
+    """
+    # Gram matrix of the neighborhood of the point
+    Z = x - neighbors
+    G = np.dot(Z, Z.T)
+
+    # Smallest eigenvalue of `G`
+    e_min = eigvalsh(G, eigvals=(0, 0))[0]
+    # Ensure that `G` is not singular
+    if e_min < 1e-8:
+        tr = max(np.trace(G), 1e-8)
+        np.fill_diagonal(G, G.diagonal() + reg_eps * tr)
+
+    w = solve(G, np.ones(G.shape[0]), assume_a='pos')
+    return w / np.sum(w)
+
+
+def helper_solve_lle(data, nn_indices, reg_eps, n):
+    return solve_lle_weights(data[n, :], data[nn_indices[n, :], :], reg_eps=reg_eps)
