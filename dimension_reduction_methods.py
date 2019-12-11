@@ -518,10 +518,10 @@ class NeighborhoodPreservingProjection:
         # X^T M X
         lmat = sparse.csr_matrix.dot(data_trans, self.iterated_laplacian_matrix).dot(data)
         if self.orthogonal:
-            # OLPP, the paper [2] recommends skipping the eigenvector corresponding to the smallest eigenvalue
+            # ONPP, the paper [2] recommends skipping the eigenvector corresponding to the smallest eigenvalue
             eig_values, eig_vectors = eigh(lmat, eigvals=(1, self.dim_projection))
         else:
-            # Standard LPP
+            # Standard NPP or NPE
             # X^T X
             rmat = np.dot(data_trans, data)
             eig_values, eig_vectors = eigh(lmat, b=rmat, eigvals=(0, self.dim_projection - 1))
