@@ -149,13 +149,14 @@ class KNNIndex:
 
         return index_knn
 
-    def query(self, data, k=1, exclude_self=False):
+    def query(self, data, k=None, exclude_self=False):
         """
         Query for the `k` nearest neighbors of each point in `data`.
 
         :param data: numpy data array of shape `(N, d)`, where `N` is the number of samples and `d` is the number
                      of dimensions (features).
-        :param k: int number of nearest neighbors to query.
+        :param k: number of nearest neighbors to query. If not specified or set to `None`, `k` will be
+                  set to `self.n_neighbors`.
         :param exclude_self: Set to True if `data` was used to construct the KNN index. This will ensure that points
                              are not included in their own neighborhood set.
 
@@ -163,6 +164,9 @@ class KNNIndex:
             - nn_indices: numpy array of indices of the nearest neighbors. Has shape `(data.shape[0], k)`.
             - nn_distances: numpy array of distances of the nearest neighbors. Has shape `(data.shape[0], k)`.
         """
+        if k is None:
+            k = self.n_neighbors
+
         if self.shared_nearest_neighbors:
             if exclude_self:
                 data_neighbors, _ = remove_self_neighbors(

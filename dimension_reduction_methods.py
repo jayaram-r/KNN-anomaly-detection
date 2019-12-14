@@ -140,6 +140,8 @@ def pca_wrapper(data, n_comp=None, cutoff=1.0, seed_rng=123):
                 format(100 * cutoff, n2))
     if n_comp is None:
         n_comp = min(n1, n2)
+    else:
+        n_comp = min(n1, n2, n_comp)
 
     logger.info("Dimension of the PCA transformed data = {:d}".format(n_comp))
     transform_pca = mod_pca.components_[:n_comp, :].T
@@ -688,7 +690,8 @@ def wrapper_data_projection(data, method, data_test=None, metric='euclidean', me
             data_proj_test = model.transform(data_test)
 
     elif method == 'PCA':
-        data_proj, mean_data, transform_pca = pca_wrapper(data, n_comp=dim_proj, seed_rng=seed_rng)
+        data_proj, mean_data, transform_pca = pca_wrapper(data, n_comp=dim_proj, cutoff=pca_cutoff,
+                                                          seed_rng=seed_rng)
         if data_test is None:
             data_proj_test = None
         else:

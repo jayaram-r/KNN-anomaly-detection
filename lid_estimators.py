@@ -5,9 +5,7 @@ Methods for (local) intrinsic dimension estimation based on nearest neighbor dis
 import numpy as np
 from scipy import stats
 import sys
-from pynndescent import NNDescent
-from sklearn.neighbors import NearestNeighbors
-from metrics_custom import remove_self_neighbors
+from knn_index import KNNIndex
 
 
 def lid_mle_amsaleg(knn_distances):
@@ -89,38 +87,17 @@ def estimate_intrinsic_dimension(data,
 
     :return: positive float value specifying the estimated intrinsic dimension.
     """
-    if n_neighbors is None:
-        # Set number of nearest neighbors based on the data size and the neighborhood constant
-        n_neighbors = int(np.ceil(data.shape[0] ** neighborhood_constant))
-
-    if approx_nearest_neighbors:
-        # Construct an approximate nearest neighbor (ANN) index to query nearest neighbors
-        params = {
-            'metric': 'euclidean',
-            'n_neighbors': max(n_neighbors + 1, 20),
-            'rho': 0.5,
-            'random_state': seed_rng,
-            'n_jobs': n_jobs
-        }
-        index_knn = NNDescent(data, **params)
-
-        # Query the nearest neighbors of each point
-        nn_indices_, nn_distances_ = index_knn.query(data, k=(n_neighbors + 1))
-    else:
-        # Construct the exact KNN graph
-        index_knn = NearestNeighbors(
-            n_neighbors=(n_neighbors + 1),
-            algorithm='brute',
-            metric='euclidean',
-            n_jobs=n_jobs
-        )
-        index_knn.fit(data)
-
-        # Query the nearest neighbors of each point
-        nn_distances_, nn_indices_ = index_knn.kneighbors(data, n_neighbors=(n_neighbors + 1))
-
-    # Since each point will be included in its own neighborhood set, they should be removed
-    _, nn_distances = remove_self_neighbors(nn_indices_, nn_distances_)
+    # Build a KNN graph index
+    index_knn = KNNIndex(data,
+                         neighborhood_constant=neighborhood_constant,
+                         n_neighbors=n_neighbors,
+                         metric='euclidean',
+                         shared_nearest_neighbors=False,
+                         approx_nearest_neighbors=approx_nearest_neighbors,
+                         n_jobs=n_jobs,
+                         seed_rng=seed_rng)
+    # Query the nearest neighbors of each point
+    nn_indices, nn_distances = index_knn.query(data, exclude_self=True)
 
     method = method.lower()
     if method == 'two_nn':
