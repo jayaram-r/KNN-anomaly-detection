@@ -6,6 +6,11 @@ import numpy as np
 from knn_index import KNNIndex
 from numba import njit, int64, float64
 from numba.types import Tuple
+from dimension_reduction_methods import (
+    pca_wrapper,
+    wrapper_data_projection,
+    METHODS_LIST
+)
 
 
 def wrapper_knn(data, labels, k,
@@ -15,6 +20,27 @@ def wrapper_knn(data, labels, k,
                 approx_nearest_neighbors=True,
                 n_jobs=1,
                 seed_rng=123):
+    """
+
+    :param data: numpy array with the training data of shape `(N, d)`, where `N` is the number of samples
+                 and `d` is the dimension.
+    :param labels: numpy array with the training labels of shape `(N, )`.
+    :param k: int value specifying the number of neighbors.
+    :param data_test: None or a numpy array with the test data similar to `data`.
+    :param labels_test: None or a numpy array with the test labels similar to `labels`.
+    :param metric: predefined distance metric string or a callable that calculates a custom distance metric.
+    :param metric_kwargs: None or a dict specifying any keyword arguments for the distance metric.
+    :param shared_nearest_neighbors: Set to True in order to use the shared nearest neighbor (SNN) distance.
+                                     This is a secondary distance metric that is found to be better suited to
+                                     high dimensional data.
+    :param approx_nearest_neighbors: Set to True in order to use an approximate nearest neighbor algorithm to
+                                     find the nearest neighbors. This is recommended when the number of points is
+                                     large and/or when the dimension of the data is high.
+    :param n_jobs: Number of parallel jobs or processes. Set to -1 to use all the available cpu cores.
+    :param seed_rng: int value specifying the seed for the random number generator.
+
+    :return: error rate (in the range [0, 1]) on the test data (if provided as input) or the training data.
+    """
     knn_model = KNNClassifier(
         n_neighbors=k,
         metric=metric, metric_kwargs=metric_kwargs,

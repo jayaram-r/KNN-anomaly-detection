@@ -316,25 +316,39 @@ class LocalityPreservingProjection:
 
         self.transform_comb = np.dot(self.transform_pca, self.transform_lpp)
 
-    def transform(self, data):
+    def transform(self, data, dim=None):
         """
         Transform the given data by first subtracting the mean and then applying the linear projection.
+        Optionally, you can specify the dimension of the transformed data using `dim`. This cannot be larger
+        than `self.dim_projection`.
 
         :param data: numpy array of shape `(N, d)` with `N` samples in `d` dimensions.
-        :return: numpy array of shape `(N, d_red)` with `N` samples in `self.dim_projection` dimensions.
-        """
-        data_trans = data - self.mean_data
-        return np.dot(data_trans, self.transform_comb)
+        :param dim: If set to `None`, the dimension of the transformed data is `self.dim_projection`.
+                    Else `dim` can be set to a value <= `self.dim_projection`. Doing this basically takes only
+                    the `dim` top eigenvectors.
 
-    def fit_transform(self, data):
+        :return:
+            - data_trans: numpy array of shape `(N, dim)` with the transformed, dimension-reduced data.
+        """
+        if dim is None:
+            data_trans = np.dot(data - self.mean_data, self.transform_comb)
+        else:
+            data_trans = np.dot(data - self.mean_data, self.transform_comb[:, 0:dim])
+
+        return data_trans
+
+    def fit_transform(self, data, dim=None):
         """
         Fit the model and transform the given data.
 
         :param data: numpy array of shape `(N, d)` with `N` samples in `d` dimensions.
-        :return: numpy array of shape `(N, d_red)` with `N` samples in `self.dim_projection` dimensions.
+        :param dim: same as the `transform` method.
+
+        :return:
+            - data_trans: numpy array of shape `(N, dim)` with the transformed, dimension-reduced data.
         """
         self.fit(data)
-        return self.transform(data)
+        return self.transform(data, dim=dim)
 
     def create_laplacian_matrix(self, data):
         """
@@ -537,25 +551,39 @@ class NeighborhoodPreservingProjection:
 
         self.transform_comb = np.dot(self.transform_pca, self.transform_npp)
 
-    def transform(self, data):
+    def transform(self, data, dim=None):
         """
         Transform the given data by first subtracting the mean and then applying the linear projection.
+        Optionally, you can specify the dimension of the transformed data using `dim`. This cannot be larger
+        than `self.dim_projection`.
 
         :param data: numpy array of shape `(N, d)` with `N` samples in `d` dimensions.
-        :return: numpy array of shape `(N, d_red)` with `N` samples in `self.dim_projection` dimensions.
-        """
-        data_trans = data - self.mean_data
-        return np.dot(data_trans, self.transform_comb)
+        :param dim: If set to `None`, the dimension of the transformed data is `self.dim_projection`.
+                    Else `dim` can be set to a value <= `self.dim_projection`. Doing this basically takes only
+                    the `dim` top eigenvectors.
 
-    def fit_transform(self, data):
+        :return:
+            - data_trans: numpy array of shape `(N, dim)` with the transformed, dimension-reduced data.
+        """
+        if dim is None:
+            data_trans = np.dot(data - self.mean_data, self.transform_comb)
+        else:
+            data_trans = np.dot(data - self.mean_data, self.transform_comb[:, 0:dim])
+
+        return data_trans
+
+    def fit_transform(self, data, dim=None):
         """
         Fit the model and transform the given data.
 
         :param data: numpy array of shape `(N, d)` with `N` samples in `d` dimensions.
-        :return: numpy array of shape `(N, d_red)` with `N` samples in `self.dim_projection` dimensions.
+        :param dim: same as the `transform` method.
+
+        :return:
+            - data_trans: numpy array of shape `(N, dim)` with the transformed, dimension-reduced data.
         """
         self.fit(data)
-        return self.transform(data)
+        return self.transform(data, dim=dim)
 
     def create_iterated_laplacian(self, data):
         """
@@ -620,27 +648,46 @@ def helper_solve_lle(data, nn_indices, reg_eps, n):
     return solve_lle_weights(data[n, :], data[nn_indices[n, :], :], reg_eps=reg_eps)
 
 
-def wrapper_data_projection(data, method, data_test=None, metric='euclidean', metric_kwargs=None,
-                            snn=False, ann=True, dim_proj=3, pca_cutoff=1.0, seed_rng=123):
+def wrapper_data_projection(data, method,
+                            data_test=None,
+                            dim_proj=3,
+                            metric='euclidean', metric_kwargs=None,
+                            snn=False,
+                            ann=True,
+                            pca_cutoff=1.0,
+                            n_jobs=1,
+                            seed_rng=123):
     """
-    Wrapper function to apply different dimension reduction methods.
+    Wrapper function to apply different dimension reduction methods. The reduced dimension can be set either to a
+    single value or a list (or iterable) of values via the argument `dim_proj`. If the reduced dimension is to be
+    varied over a range of values, it is more efficient to find the optimal transformation corresponding to the
+    largest of the (reduced dimension) values once, and then project (transform) the data by taking the
+    required number of columns of the transformation matrix.
 
     :param data: numpy array of shape `(N, d)` with the training data. `N` and `d` are the number of samples
                  and features respectively.
     :param method: one of the methods `['LPP', 'OLPP', 'NPP', 'ONPP', 'PCA']`
     :param data_test: None or a numpy array of test data similar to the input `data`.
+    :param dim_proj: int or an iterable of int values. If `int`, this is taken as the dimension of the projected
+                     data. If an iterable of int values is specifed, the data is projected into a reduced dimension
+                     space corresponding to each value. The returned values will be different in this case.
     :param metric: distance metric which can be a predefined string or a callable.
     :param metric_kwargs: None or a dict of keyword arguments required by the metric callable.
     :param snn: set to True to use shared nearest neighbors.
     :param ann: set to True to use approximate nearest neighbors.
-    :param dim_proj: int value that specifies the dimension of the projected data.
     :param pca_cutoff: variance cutoff value in (0, 1]. This value is used to select the number of components
                        only if `n_comp` is not specified.
+    :param n_jobs: number of cpu cores to use for parallel processing.
     :param seed_rng: seed for the random number generator.
 
     :return:
+        - data_proj: dimension reduced version of `data`. If `dim_proj` is an integer value, this will be a numpy
+                     array of shape `(N, dim_proj)`. If `dim_proj` is an iterable of integer values, then this will
+                     be a list of numpy arrays, where each numpy array is the transformed data corresponding to a
+                     single value in `dim_proj`.
+        - data_proj_test: Returned only if `data_test is not None`.
+                          This will be a dimension reduced version of `data_test`. Same format as `data_proj`.
     """
-    n_jobs = max(multiprocessing.cpu_count() - 2, 1)
     # Choices are {'simple', 'SNN', 'heat_kernel'}
     edge_weights = 'heat_kernel'
 
@@ -648,9 +695,20 @@ def wrapper_data_projection(data, method, data_test=None, metric='euclidean', me
     # In [1], it is recommended to chose `k = n^{2 / 5} = n^0.4`
     neighborhood_constant = 0.4
 
+    if isinstance(dim_proj, int):
+        dim_proj_max = dim_proj
+        rtype = 'arr'
+    else:
+        dim_proj_max = max(dim_proj)
+        rtype = 'list'
+
+    rtest = (data_test is not None)
+    data_proj = None
+    data_proj_test = None
+
     if method == 'LPP' or method == 'OLPP':
         model = LocalityPreservingProjection(
-            dim_projection=dim_proj,
+            dim_projection=dim_proj_max,
             orthogonal=(method == 'OLPP'),
             pca_cutoff=pca_cutoff,
             neighborhood_constant=neighborhood_constant,
@@ -664,14 +722,17 @@ def wrapper_data_projection(data, method, data_test=None, metric='euclidean', me
         )
         model.fit(data)
         data_proj = model.transform(data)
-        if data_test is None:
-            data_proj_test = None
-        else:
+        if rtest:
             data_proj_test = model.transform(data_test)
+
+        if rtype == 'list':
+            data_proj = [data_proj[:, :d] for d in dim_proj]
+            if rtest:
+                data_proj_test = [data_proj_test[:, :d] for d in dim_proj]
 
     elif method == 'NPP' or method == 'ONPP':
         model = NeighborhoodPreservingProjection(
-            dim_projection=dim_proj,
+            dim_projection=dim_proj_max,
             orthogonal=(method == 'ONPP'),
             pca_cutoff=pca_cutoff,
             neighborhood_constant=neighborhood_constant,
@@ -684,20 +745,29 @@ def wrapper_data_projection(data, method, data_test=None, metric='euclidean', me
         )
         model.fit(data)
         data_proj = model.transform(data)
-        if data_test is None:
-            data_proj_test = None
-        else:
+        if rtest:
             data_proj_test = model.transform(data_test)
 
+        if rtype == 'list':
+            data_proj = [data_proj[:, :d] for d in dim_proj]
+            if rtest:
+                data_proj_test = [data_proj_test[:, :d] for d in dim_proj]
+
     elif method == 'PCA':
-        data_proj, mean_data, transform_pca = pca_wrapper(data, n_comp=dim_proj, cutoff=pca_cutoff,
+        data_proj, mean_data, transform_pca = pca_wrapper(data, n_comp=dim_proj_max, cutoff=pca_cutoff,
                                                           seed_rng=seed_rng)
-        if data_test is None:
-            data_proj_test = None
-        else:
+        if rtest:
             data_proj_test = np.dot(data_test - mean_data, transform_pca)
+
+        if rtype == 'list':
+            data_proj = [data_proj[:, :d] for d in dim_proj]
+            if rtest:
+                data_proj_test = [data_proj_test[:, :d] for d in dim_proj]
 
     else:
         raise ValueError("Invalid value '{}' received by parameter 'method'".format(method))
 
-    return data_proj, data_proj_test
+    if rtest:
+        return data_proj, data_proj_test
+    else:
+        return data_proj
