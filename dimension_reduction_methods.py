@@ -666,7 +666,7 @@ def wrapper_data_projection(data, method,
 
     :param data: numpy array of shape `(N, d)` with the training data. `N` and `d` are the number of samples
                  and features respectively.
-    :param method: one of the methods `['LPP', 'OLPP', 'NPP', 'ONPP', 'PCA']`
+    :param method: one of the methods `['LPP', 'OLPP', 'NPP', 'ONPP', 'PCA']`.
     :param data_test: None or a numpy array of test data similar to the input `data`.
     :param dim_proj: int or an iterable of int values. If `int`, this is taken as the dimension of the projected
                      data. If an iterable of int values is specifed, the data is projected into a reduced dimension
@@ -695,12 +695,12 @@ def wrapper_data_projection(data, method,
     # In [1], it is recommended to chose `k = n^{2 / 5} = n^0.4`
     neighborhood_constant = 0.4
 
-    if isinstance(dim_proj, int):
-        dim_proj_max = dim_proj
-        rtype = 'arr'
-    else:
+    if hasattr(dim_proj, '__iter__'):
         dim_proj_max = max(dim_proj)
         rtype = 'list'
+    else:
+        dim_proj_max = dim_proj
+        rtype = 'arr'
 
     rtest = (data_test is not None)
     data_proj = None
