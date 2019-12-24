@@ -381,7 +381,7 @@ class KNNClassifier:
         # Query the maximum number of nearest neighbors from `k_list`
         nn_indices, nn_distances = self.index_knn.query(X, k=k_list[-1], exclude_self=is_train)
 
-        if self.n_jobs == 1:
+        if self.n_jobs == 1 or len(k_list) == 1:
             labels_pred = np.array(
                 [helper_knn_predict(nn_indices, self.y_train, self.n_classes, self.label_dec, k)[0] for k in k_list],
                 dtype=self.labels_dtype
